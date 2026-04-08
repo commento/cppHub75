@@ -574,10 +574,10 @@ public:
         cv::Mat luma8;
         cv::cvtColor(img, luma8, cv::COLOR_RGB2GRAY);
 
-        const int max_span = std::max(12, (int)(amount * 52.0f));
-        const int min_run = std::max(4, (int)(4 + amount * 12.0f));
-        const int left_threshold = std::clamp((int)(68 + threshold_bias * 40.0f + amount * 26.0f + left_level * 90.0f), 12, 230);
-        const int right_threshold = std::clamp((int)(68 + threshold_bias * 40.0f + amount * 26.0f + right_level * 90.0f), 12, 230);
+        const int max_span = std::max(24, (int)(amount * 92.0f));
+        const int min_run = std::max(2, (int)(2 + amount * 8.0f));
+        const int left_threshold = std::clamp((int)(1 + threshold_bias * 8.0f + (1.0f - amount) * 10.0f + left_level * 18.0f), 1, 64);
+        const int right_threshold = std::clamp((int)(1 + threshold_bias * 8.0f + (1.0f - amount) * 10.0f + right_level * 18.0f), 1, 64);
 
         auto sort_segment = [&](int fixed, int start, int end, bool vertical, bool descending) {
             if (end - start < min_run) return;
@@ -608,13 +608,13 @@ public:
                 while (x < img.cols) {
                     const float pan = (float)x / std::max(1, img.cols - 1);
                     const int cutoff = (int)std::lround(left_threshold * (1.0f - pan) + right_threshold * pan);
-                    const int strength = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 170.0f);
+                    const int strength = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
                     if (strength > cutoff) {
                         int start = x;
                         while (x < img.cols && x - start < max_span) {
                             const float local_pan = (float)x / std::max(1, img.cols - 1);
                             const int local_cutoff = (int)std::lround(left_threshold * (1.0f - local_pan) + right_threshold * local_pan);
-                            const int current = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 170.0f);
+                            const int current = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
                             if (current <= local_cutoff) break;
                             ++x;
                         }
@@ -631,11 +631,11 @@ public:
                 while (y < img.rows) {
                     const float pan = (float)x / std::max(1, img.cols - 1);
                     const int cutoff = (int)std::lround(left_threshold * (1.0f - pan) + right_threshold * pan);
-                    const int strength = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 170.0f);
+                    const int strength = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
                     if (strength > cutoff) {
                         int start = y;
                         while (y < img.rows && y - start < max_span) {
-                            const int current = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 170.0f);
+                            const int current = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
                             if (current <= cutoff) break;
                             ++y;
                         }
