@@ -1006,7 +1006,8 @@ int main(int argc, char *argv[]) {
 
         const bool kick_detected =
             (features.transient > 0.14f && features.low > 0.24f) ||
-            (features.transient > 0.12f && features.mid > 0.30f);
+            (features.transient > 0.09f && features.mid > 0.22f) ||
+            (features.rms > 0.10f && features.mid > 0.18f);
         if (kick_detected && !kick_triggered && since_kick > 0.16f) {
             if (!random_buffer.empty()) {
                 int best_idx = rand() % random_buffer.size();
@@ -1028,7 +1029,7 @@ int main(int argc, char *argv[]) {
             kick_triggered = true;
             last_kick = now;
         }
-        else if (features.low <= 0.16f && features.mid <= 0.22f && features.transient <= 0.08f) {
+        else if (features.low <= 0.14f && features.mid <= 0.16f && features.transient <= 0.06f && features.rms <= 0.08f) {
             kick_triggered = false;
         }
 
