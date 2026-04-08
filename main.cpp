@@ -28,6 +28,8 @@ using rgb_matrix::FrameCanvas;
 
 struct AudioFeatures {
     float rms = 0.0f;
+    float left = 0.0f;
+    float right = 0.0f;
     float low = 0.0f;
     float mid = 0.0f;
     float high = 0.0f;
@@ -51,6 +53,8 @@ public:
     AudioFeatures current_features;
 
     float smooth_rms = 0.0f;
+    float smooth_left = 0.0f;
+    float smooth_right = 0.0f;
     float smooth_low = 0.0f;
     float smooth_mid = 0.0f;
     float smooth_high = 0.0f;
@@ -83,17 +87,27 @@ public:
         if (!input || input_channels <= 0) return;
 
         std::vector<float> mono(framesPerBuffer);
+        std::vector<float> left_channel(framesPerBuffer);
+        std::vector<float> right_channel(framesPerBuffer);
 
         for (unsigned long i = 0; i < framesPerBuffer; i++) {
             float l = input[i * input_channels];
             float r = (input_channels > 1) ? input[i * input_channels + 1] : l;
+            left_channel[i] = l;
+            right_channel[i] = r;
             mono[i] = 0.5f * (l + r);
         }
 
         // RMS
         float rms = 0.0f;
+        float left_rms = 0.0f;
+        float right_rms = 0.0f;
         for (auto s : mono) rms += s * s;
+        for (auto s : left_channel) left_rms += s * s;
+        for (auto s : right_channel) right_rms += s * s;
         rms = std::sqrt(rms / mono.size());
+        left_rms = std::sqrt(left_rms / left_channel.size());
+        right_rms = std::sqrt(right_rms / right_channel.size());
 
         // FFT
         int N = (int)mono.size();
@@ -139,9 +153,13 @@ public:
         float raw_mid = std::min(mid / 30.0f, 1.0f);
         float raw_high = std::min(high / 20.0f, 1.0f);
         float raw_rms = std::min(rms * 8.0f, 1.0f);
+        float raw_left = std::min(left_rms * 8.0f, 1.0f);
+        float raw_right = std::min(right_rms * 8.0f, 1.0f);
 
         // smoothing
         smooth_rms  = smooth_value(smooth_rms,  raw_rms,  0.25f, 0.05f);
+        smooth_left = smooth_value(smooth_left, raw_left, 0.30f, 0.08f);
+        smooth_right = smooth_value(smooth_right, raw_right, 0.30f, 0.08f);
         smooth_low  = smooth_value(smooth_low,  raw_low,  0.35f, 0.08f);
         smooth_mid  = smooth_value(smooth_mid,  raw_mid,  0.28f, 0.07f);
         smooth_high = smooth_value(smooth_high, raw_high, 0.22f, 0.06f);
@@ -158,6 +176,8 @@ public:
 
         std::lock_guard<std::mutex> lock(mtx);
         current_features.rms = smooth_rms;
+        current_features.left = smooth_left;
+        current_features.right = smooth_right;
         current_features.low = smooth_low;
         current_features.mid = smooth_mid;
         current_features.high = smooth_high;
@@ -546,7 +566,8 @@ public:
         return out;
     }
 
-    cv::Mat pixel_sort(const cv::Mat& img, float amount, float threshold_bias = 0.0f) {
+    cv::Mat pixel_sort(const cv::Mat& img, float amount, float left_level, float right_level,
+                       bool vertical_mode, float threshold_bias = 0.0f) {
         if (amount < 0.03f) return img.clone();
 
         cv::Mat out = img.clone();
@@ -555,8 +576,8 @@ public:
 
         const int max_span = std::max(12, (int)(amount * 52.0f));
         const int min_run = std::max(4, (int)(4 + amount * 12.0f));
-        const int threshold = std::clamp((int)(82 + threshold_bias * 45.0f + amount * 36.0f), 20, 210);
-        const bool vertical_pass = amount > 0.12f;
+        const int left_threshold = std::clamp((int)(68 + threshold_bias * 40.0f + amount * 26.0f + left_level * 90.0f), 12, 230);
+        const int right_threshold = std::clamp((int)(68 + threshold_bias * 40.0f + amount * 26.0f + right_level * 90.0f), 12, 230);
 
         auto sort_segment = [&](int fixed, int start, int end, bool vertical, bool descending) {
             if (end - start < min_run) return;
@@ -581,42 +602,51 @@ public:
             }
         };
 
-        auto run_pass = [&](bool vertical, int cutoff, bool invert) {
-            const int major = vertical ? img.cols : img.rows;
-            const int minor = vertical ? img.rows : img.cols;
-            for (int fixed = 0; fixed < major; ++fixed) {
-                int pos = 0;
-                while (pos < minor) {
-                    int strength = vertical
-                        ? luma8.at<uchar>(pos, fixed) + (int)(edge_map.at<float>(pos, fixed) * 255.0f)
-                        : luma8.at<uchar>(fixed, pos) + (int)(motion_map.at<float>(fixed, pos) * 255.0f);
-                    const bool active = invert ? strength < cutoff : strength > cutoff;
-                    if (active) {
-                        int start = pos;
-                        while (pos < minor && pos - start < max_span) {
-                            int current = vertical
-                                ? luma8.at<uchar>(pos, fixed) + (int)(edge_map.at<float>(pos, fixed) * 255.0f)
-                                : luma8.at<uchar>(fixed, pos) + (int)(motion_map.at<float>(fixed, pos) * 255.0f);
-                            const bool keep = invert ? current < cutoff : current > cutoff;
-                            if (!keep) break;
-                            ++pos;
+        if (!vertical_mode) {
+            for (int y = 0; y < img.rows; ++y) {
+                int x = 0;
+                while (x < img.cols) {
+                    const float pan = (float)x / std::max(1, img.cols - 1);
+                    const int cutoff = (int)std::lround(left_threshold * (1.0f - pan) + right_threshold * pan);
+                    const int strength = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 170.0f);
+                    if (strength > cutoff) {
+                        int start = x;
+                        while (x < img.cols && x - start < max_span) {
+                            const float local_pan = (float)x / std::max(1, img.cols - 1);
+                            const int local_cutoff = (int)std::lround(left_threshold * (1.0f - local_pan) + right_threshold * local_pan);
+                            const int current = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 170.0f);
+                            if (current <= local_cutoff) break;
+                            ++x;
                         }
-                        const bool descending = ((fixed + start) % 2 == 0) ^ invert;
-                        sort_segment(fixed, start, pos, vertical, descending);
+                        const bool descending = ((y + start) % 2 == 0);
+                        sort_segment(y, start, x, false, descending);
                     } else {
-                        ++pos;
+                        ++x;
                     }
                 }
             }
-        };
-
-        run_pass(false, threshold, false);
-        run_pass(false, threshold - 18, true);
-
-        if (!vertical_pass) return out;
-
-        run_pass(true, threshold + 6, false);
-        if (amount > 0.45f) run_pass(true, threshold - 10, true);
+        } else {
+            for (int x = 0; x < img.cols; ++x) {
+                int y = 0;
+                while (y < img.rows) {
+                    const float pan = (float)x / std::max(1, img.cols - 1);
+                    const int cutoff = (int)std::lround(left_threshold * (1.0f - pan) + right_threshold * pan);
+                    const int strength = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 170.0f);
+                    if (strength > cutoff) {
+                        int start = y;
+                        while (y < img.rows && y - start < max_span) {
+                            const int current = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 170.0f);
+                            if (current <= cutoff) break;
+                            ++y;
+                        }
+                        const bool descending = ((x + start) % 2 == 0);
+                        sort_segment(x, start, y, true, descending);
+                    } else {
+                        ++y;
+                    }
+                }
+            }
+        }
 
         return out;
     }
@@ -634,12 +664,13 @@ public:
         const float glitch_amt = (f.high * 1.3f + f.mid * 0.5f) * clarity_gate;
         const float burn_amt = (f.high * 1.1f + f.transient * 0.8f) * (0.15f + 0.85f * clarity_gate);
         const float sort_amt = std::clamp(f.mid * 0.9f + f.high * 0.7f + f.transient * 0.8f, 0.0f, 1.0f) * clarity_gate;
+        const bool kick_sort_vertical = (f.transient > 0.28f && f.low > 0.45f) || (f.transient > 0.42f);
 
         img = background_mass_displacement(img, motion_amt);
         img = contour_displacement_static_only(img, contour_amt);
         img = edge_rgb_glitch_static_only(img, glitch_amt);
         img = edge_color_burn_static_only(img, burn_amt);
-        img = pixel_sort(img, sort_amt, f.low - 0.25f);
+        img = pixel_sort(img, sort_amt, f.left, f.right, kick_sort_vertical, f.low - 0.25f);
 
         img = preserve_moving_areas(img);
         img = preserve_stillness(img, f.rms);
@@ -803,7 +834,7 @@ cv::Mat apply_panel_transform(const cv::Mat& panel, int rotate_deg, bool flip_x,
     return transformed;
 }
 
-void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame) {
+void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame, bool high_energy_orientation = false) {
     const int panel_w = logical_frame.cols / 2;
     const int panel_h = logical_frame.rows / 2;
 
@@ -821,10 +852,10 @@ void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame) {
     };
 
     const PanelRoute routes[] = {
-        {"p3", src_p3, 90, false, false},
-        {"p1", src_p1, 90, false, false},
-        {"p2", src_p2, 270, false, false},
-        {"p4", src_p4, 270, false, false},
+        {"p3", src_p3, high_energy_orientation ? 270 : 90, false, false},
+        {"p1", src_p1, high_energy_orientation ? 270 : 90, false, false},
+        {"p2", src_p2, high_energy_orientation ? 90 : 270, false, false},
+        {"p4", src_p4, high_energy_orientation ? 90 : 270, false, false},
     };
 
     for (int slot = 0; slot < 4; ++slot) {
@@ -886,7 +917,7 @@ int main(int argc, char *argv[]) {
         cv::Mat base = load_rgb_image_or_blank(TEST_IMAGE_PATH, LOGICAL_WIDTH, LOGICAL_HEIGHT);
         cv::Mat guide = make_orientation_guide(base);
         while (true) {
-            draw_layout_to_matrix(offscreen, guide);
+            draw_layout_to_matrix(offscreen, guide, false);
             offscreen = matrix->SwapOnVSync(offscreen);
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
         }
@@ -944,7 +975,7 @@ int main(int argc, char *argv[]) {
 
         if (no_audio && has_frozen_frame) {
             // Se non c'e' audio, tieni l'ultimo frame processato fermo.
-            draw_layout_to_matrix(offscreen, frozen_output);
+            draw_layout_to_matrix(offscreen, frozen_output, false);
             offscreen = matrix->SwapOnVSync(offscreen);
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
@@ -996,7 +1027,9 @@ int main(int argc, char *argv[]) {
         frozen_output = out.clone();
         has_frozen_frame = true;
 
-        draw_layout_to_matrix(offscreen, out);
+        const float orientation_energy = std::clamp(features.transient * 1.4f + features.high * 0.8f + features.rms * 0.5f, 0.0f, 1.0f);
+        const bool use_previous_orientation = orientation_energy > 0.58f;
+        draw_layout_to_matrix(offscreen, out, use_previous_orientation);
         offscreen = matrix->SwapOnVSync(offscreen);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60fps target
