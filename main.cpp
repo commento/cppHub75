@@ -694,7 +694,7 @@ public:
 
         if (kick_hold > 0.01f) {
             cv::Mat emphasized;
-            const float alpha = std::clamp(0.45f + kick_hold * 0.45f, 0.0f, 0.90f);
+            const float alpha = std::clamp(0.72f + kick_hold * 0.22f, 0.0f, 0.96f);
             cv::addWeighted(img, 1.0f - alpha, base_img, alpha, 0.0, emphasized);
             img = emphasized;
         }
@@ -989,8 +989,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    bool kick_triggered = false;
-    auto last_kick = std::chrono::steady_clock::now();
+    auto last_kick = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
     cv::Mat active_kick_frame;
     auto kick_frame_until = std::chrono::steady_clock::time_point::min();
     int active_orientation_variant = 0;
@@ -1005,10 +1004,11 @@ int main(int argc, char *argv[]) {
         float since_kick = std::chrono::duration<float>(now - last_kick).count();
 
         const bool kick_detected =
-            (features.transient > 0.14f && features.low > 0.24f) ||
-            (features.transient > 0.09f && features.mid > 0.22f) ||
-            (features.rms > 0.10f && features.mid > 0.18f);
-        if (kick_detected && !kick_triggered && since_kick > 0.16f) {
+            (features.transient > 0.07f && features.low > 0.16f) ||
+            (features.transient > 0.05f && features.mid > 0.14f) ||
+            (features.rms > 0.07f && features.mid > 0.12f) ||
+            (features.rms > 0.10f);
+        if (kick_detected && since_kick > 0.10f) {
             if (!random_buffer.empty()) {
                 int best_idx = rand() % random_buffer.size();
                 double best_score = -1.0;
@@ -1024,13 +1024,9 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 active_kick_frame = random_buffer[best_idx].clone();
-                kick_frame_until = now + std::chrono::milliseconds(180);
+                kick_frame_until = now + std::chrono::milliseconds(95);
             }
-            kick_triggered = true;
             last_kick = now;
-        }
-        else if (features.low <= 0.14f && features.mid <= 0.16f && features.transient <= 0.06f && features.rms <= 0.08f) {
-            kick_triggered = false;
         }
 
         // --------------------------------
@@ -1053,7 +1049,7 @@ int main(int argc, char *argv[]) {
         float kick_hold = 0.0f;
         if (kick_frame_active) {
             float remaining = std::chrono::duration<float>(kick_frame_until - now).count();
-            kick_hold = std::clamp(remaining / 0.18f, 0.0f, 1.0f);
+            kick_hold = std::clamp(remaining / 0.095f, 0.0f, 1.0f);
         }
         if (kick_frame_active) {
             visual.base_img = active_kick_frame.clone();
