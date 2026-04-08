@@ -576,8 +576,8 @@ public:
 
         const int max_span = std::max(24, (int)(amount * 92.0f));
         const int min_run = std::max(2, (int)(2 + amount * 8.0f));
-        const int left_threshold = std::clamp((int)(1 + threshold_bias * 8.0f + (1.0f - amount) * 10.0f + left_level * 18.0f), 1, 64);
-        const int right_threshold = std::clamp((int)(1 + threshold_bias * 8.0f + (1.0f - amount) * 10.0f + right_level * 18.0f), 1, 64);
+        const int left_threshold = std::clamp((int)(1 + threshold_bias * 6.0f + (1.0f - amount) * 7.0f + left_level * 14.0f), 1, 56);
+        const int right_threshold = std::clamp((int)(1 + threshold_bias * 6.0f + (1.0f - amount) * 7.0f + right_level * 14.0f), 1, 56);
 
         auto sort_segment = [&](int fixed, int start, int end, bool vertical, bool descending) {
             if (end - start < min_run) return;
@@ -610,7 +610,7 @@ public:
                 const int edge_strength = (int)(edge_map.at<float>(y, x) * 255.0f);
                 const int motion_strength = (int)(motion_map.at<float>(y, x) * 255.0f);
                 const int strength = luma8.at<uchar>(y, x) + edge_strength + motion_strength / 2;
-                const bool edge_active = edge_strength > std::max(10, cutoff / 3);
+                const bool edge_active = edge_strength > std::max(8, cutoff / 4);
                 if (edge_active && strength > cutoff) {
                     int start = x;
                     while (x < img.cols && x - start < max_span) {
@@ -619,7 +619,7 @@ public:
                         const int local_edge = (int)(edge_map.at<float>(y, x) * 255.0f);
                         const int local_motion = (int)(motion_map.at<float>(y, x) * 255.0f);
                         const int current = luma8.at<uchar>(y, x) + local_edge + local_motion / 2;
-                        const bool local_edge_active = local_edge > std::max(10, local_cutoff / 3);
+                        const bool local_edge_active = local_edge > std::max(8, local_cutoff / 4);
                         if (!local_edge_active || current <= local_cutoff) break;
                         ++x;
                     }
