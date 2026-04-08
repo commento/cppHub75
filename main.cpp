@@ -655,7 +655,6 @@ public:
         time_t += 0.05f;
 
         cv::Mat img = base_img.clone();
-        img = apply_red_grade(img);
 
         const float energy = std::clamp(f.rms * 1.8f + f.transient * 0.8f + f.mid * 0.35f, 0.0f, 1.0f);
         const float clarity_gate = std::clamp((energy - 0.08f) / 0.55f, 0.0f, 1.0f);
@@ -950,36 +949,8 @@ int main(int argc, char *argv[]) {
     bool kick_triggered = false;
     auto last_kick = std::chrono::steady_clock::now();
 
-    cv::Mat frozen_output;
-    bool has_frozen_frame = false;
-
-    // soglia sotto la quale consideriamo "silenzio"
-    const float SILENCE_THRESHOLD = 0.015f;
-    auto last_audio_time = std::chrono::steady_clock::now();
-    const float SILENCE_HOLD_SEC = 0.35f;
-
     while (true) {
-        // --------------------------------
-        // QUI devi collegare il tuo audio vero
-        // --------------------------------
         AudioFeatures features = audio.getFeatures();
-        if (features.rms >= SILENCE_THRESHOLD) {
-            last_audio_time = std::chrono::steady_clock::now();
-        }
-
-        float silence_elapsed = std::chrono::duration<float>(
-            std::chrono::steady_clock::now() - last_audio_time
-        ).count();
-
-        bool no_audio = silence_elapsed > SILENCE_HOLD_SEC;
-
-        if (no_audio && has_frozen_frame) {
-            // Se non c'e' audio, tieni l'ultimo frame processato fermo.
-            draw_layout_to_matrix(offscreen, frozen_output, false);
-            offscreen = matrix->SwapOnVSync(offscreen);
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            continue;
-        }
         // --------------------------------
         // KICK JUMP con cooldown
         // --------------------------------
@@ -1024,8 +995,6 @@ int main(int argc, char *argv[]) {
         visual.motion_map = visual.compute_motion_map(visual.luma);
 
         cv::Mat out = visual.update(features);
-        frozen_output = out.clone();
-        has_frozen_frame = true;
 
         const float orientation_energy = std::clamp(features.transient * 1.4f + features.high * 0.8f + features.rms * 0.5f, 0.0f, 1.0f);
         const bool use_previous_orientation = orientation_energy > 0.58f;
