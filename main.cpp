@@ -567,7 +567,7 @@ public:
     }
 
     cv::Mat pixel_sort(const cv::Mat& img, float amount, float left_level, float right_level,
-                       bool vertical_mode, float threshold_bias = 0.0f) {
+                       float threshold_bias = 0.0f) {
         if (amount < 0.03f) return img.clone();
 
         cv::Mat out = img.clone();
@@ -602,48 +602,31 @@ public:
             }
         };
 
-        if (!vertical_mode) {
-            for (int y = 0; y < img.rows; ++y) {
-                int x = 0;
-                while (x < img.cols) {
-                    const float pan = (float)x / std::max(1, img.cols - 1);
-                    const int cutoff = (int)std::lround(left_threshold * (1.0f - pan) + right_threshold * pan);
-                    const int strength = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
-                    if (strength > cutoff) {
-                        int start = x;
-                        while (x < img.cols && x - start < max_span) {
-                            const float local_pan = (float)x / std::max(1, img.cols - 1);
-                            const int local_cutoff = (int)std::lround(left_threshold * (1.0f - local_pan) + right_threshold * local_pan);
-                            const int current = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
-                            if (current <= local_cutoff) break;
-                            ++x;
-                        }
-                        const bool descending = ((y + start) % 2 == 0);
-                        sort_segment(y, start, x, false, descending);
-                    } else {
+        for (int y = 0; y < img.rows; ++y) {
+            int x = 0;
+            while (x < img.cols) {
+                const float pan = (float)x / std::max(1, img.cols - 1);
+                const int cutoff = (int)std::lround(left_threshold * (1.0f - pan) + right_threshold * pan);
+                const int edge_strength = (int)(edge_map.at<float>(y, x) * 255.0f);
+                const int motion_strength = (int)(motion_map.at<float>(y, x) * 255.0f);
+                const int strength = luma8.at<uchar>(y, x) + edge_strength + motion_strength / 2;
+                const bool edge_active = edge_strength > std::max(10, cutoff / 3);
+                if (edge_active && strength > cutoff) {
+                    int start = x;
+                    while (x < img.cols && x - start < max_span) {
+                        const float local_pan = (float)x / std::max(1, img.cols - 1);
+                        const int local_cutoff = (int)std::lround(left_threshold * (1.0f - local_pan) + right_threshold * local_pan);
+                        const int local_edge = (int)(edge_map.at<float>(y, x) * 255.0f);
+                        const int local_motion = (int)(motion_map.at<float>(y, x) * 255.0f);
+                        const int current = luma8.at<uchar>(y, x) + local_edge + local_motion / 2;
+                        const bool local_edge_active = local_edge > std::max(10, local_cutoff / 3);
+                        if (!local_edge_active || current <= local_cutoff) break;
                         ++x;
                     }
-                }
-            }
-        } else {
-            for (int x = 0; x < img.cols; ++x) {
-                int y = 0;
-                while (y < img.rows) {
-                    const float pan = (float)x / std::max(1, img.cols - 1);
-                    const int cutoff = (int)std::lround(left_threshold * (1.0f - pan) + right_threshold * pan);
-                    const int strength = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
-                    if (strength > cutoff) {
-                        int start = y;
-                        while (y < img.rows && y - start < max_span) {
-                            const int current = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
-                            if (current <= cutoff) break;
-                            ++y;
-                        }
-                        const bool descending = ((x + start) % 2 == 0);
-                        sort_segment(x, start, y, true, descending);
-                    } else {
-                        ++y;
-                    }
+                    const bool descending = ((y + start) % 2 == 0);
+                    sort_segment(y, start, x, false, descending);
+                } else {
+                    ++x;
                 }
             }
         }
@@ -663,13 +646,12 @@ public:
         const float glitch_amt = (f.high * 1.3f + f.mid * 0.5f) * clarity_gate;
         const float burn_amt = (f.high * 1.1f + f.transient * 0.8f) * (0.15f + 0.85f * clarity_gate);
         const float sort_amt = std::clamp(f.mid * 0.9f + f.high * 0.7f + f.transient * 0.8f, 0.0f, 1.0f) * clarity_gate;
-        const bool kick_sort_vertical = (f.transient > 0.28f && f.low > 0.45f) || (f.transient > 0.42f);
 
         img = background_mass_displacement(img, motion_amt);
         img = contour_displacement_static_only(img, contour_amt);
         img = edge_rgb_glitch_static_only(img, glitch_amt);
         img = edge_color_burn_static_only(img, burn_amt);
-        img = pixel_sort(img, sort_amt, f.left, f.right, kick_sort_vertical, f.low - 0.25f);
+        img = pixel_sort(img, sort_amt, f.left, f.right, f.low - 0.25f);
 
         img = preserve_moving_areas(img);
         img = preserve_stillness(img, f.rms);
