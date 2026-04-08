@@ -627,14 +627,30 @@ public:
         cv::Mat img = base_img.clone();
         img = apply_red_grade(img);
 
-        img = background_mass_displacement(img, f.low * 0.9f + f.mid * 0.5f);
-        img = contour_displacement_static_only(img, f.mid * 1.4f + f.low * 0.4f);
-        img = edge_rgb_glitch_static_only(img, f.high * 1.3f + f.mid * 0.5f);
-        img = edge_color_burn_static_only(img, f.high * 1.1f + f.transient * 0.8f);
-        img = pixel_sort(img, std::clamp(f.mid * 0.9f + f.high * 0.7f + f.transient * 0.6f, 0.0f, 1.0f), f.low - 0.25f);
+        const float energy = std::clamp(f.rms * 1.8f + f.transient * 0.8f + f.mid * 0.35f, 0.0f, 1.0f);
+        const float clarity_gate = std::clamp((energy - 0.08f) / 0.55f, 0.0f, 1.0f);
+        const float motion_amt = (f.low * 0.9f + f.mid * 0.5f) * (0.20f + 0.80f * clarity_gate);
+        const float contour_amt = (f.mid * 1.4f + f.low * 0.4f) * clarity_gate;
+        const float glitch_amt = (f.high * 1.3f + f.mid * 0.5f) * clarity_gate;
+        const float burn_amt = (f.high * 1.1f + f.transient * 0.8f) * (0.15f + 0.85f * clarity_gate);
+        const float sort_amt = std::clamp(f.mid * 0.9f + f.high * 0.7f + f.transient * 0.8f, 0.0f, 1.0f) * clarity_gate;
+
+        img = background_mass_displacement(img, motion_amt);
+        img = contour_displacement_static_only(img, contour_amt);
+        img = edge_rgb_glitch_static_only(img, glitch_amt);
+        img = edge_color_burn_static_only(img, burn_amt);
+        img = pixel_sort(img, sort_amt, f.low - 0.25f);
 
         img = preserve_moving_areas(img);
         img = preserve_stillness(img, f.rms);
+
+        if (clarity_gate < 0.45f) {
+            cv::Mat clearer;
+            float alpha = 0.25f + (0.45f - clarity_gate) * 1.1f;
+            alpha = std::clamp(alpha, 0.0f, 0.70f);
+            cv::addWeighted(img, 1.0f - alpha, base_img, alpha, 0.0, clearer);
+            img = clearer;
+        }
 
         return img;
     }
@@ -668,6 +684,61 @@ int env_to_int(const char* name, int fallback) {
     } catch (...) {
         return fallback;
     }
+}
+
+bool env_to_bool(const char* name, bool fallback = false) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) return fallback;
+
+    std::string normalized = AudioAnalyzer::to_lower(value);
+    if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") return true;
+    if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") return false;
+    return fallback;
+}
+
+cv::Mat load_rgb_image_or_blank(const std::string& path, int width, int height) {
+    cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
+    if (img.empty()) {
+        img = cv::Mat(height, width, CV_8UC3, cv::Scalar(18, 18, 18));
+    } else {
+        cv::resize(img, img, cv::Size(width, height));
+    }
+    cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
+    return img;
+}
+
+cv::Mat make_orientation_guide(const cv::Mat& base) {
+    cv::Mat guide = base.clone();
+    const int panel_w = guide.cols / 2;
+    const int panel_h = guide.rows / 2;
+
+    cv::rectangle(guide, cv::Rect(0, 0, panel_w, panel_h), cv::Scalar(255, 60, 60), 2);
+    cv::rectangle(guide, cv::Rect(panel_w, 0, panel_w, panel_h), cv::Scalar(60, 255, 60), 2);
+    cv::rectangle(guide, cv::Rect(0, panel_h, panel_w, panel_h), cv::Scalar(60, 160, 255), 2);
+    cv::rectangle(guide, cv::Rect(panel_w, panel_h, panel_w, panel_h), cv::Scalar(255, 220, 80), 2);
+
+    cv::line(guide, cv::Point(panel_w, 0), cv::Point(panel_w, guide.rows), cv::Scalar(255, 255, 255), 1);
+    cv::line(guide, cv::Point(0, panel_h), cv::Point(guide.cols, panel_h), cv::Scalar(255, 255, 255), 1);
+
+    auto label_panel = [&](const std::string& text, int x0, int y0, cv::Scalar color, int arrow_dx, int arrow_dy) {
+        cv::putText(guide, text, cv::Point(x0 + 6, y0 + 18), cv::FONT_HERSHEY_SIMPLEX, 0.48, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+        cv::putText(guide, text, cv::Point(x0 + 6, y0 + 18), cv::FONT_HERSHEY_SIMPLEX, 0.48, color, 1, cv::LINE_AA);
+        cv::Point center(x0 + panel_w / 2, y0 + panel_h / 2);
+        cv::arrowedLine(guide, center, cv::Point(center.x + arrow_dx, center.y + arrow_dy), color, 2, cv::LINE_AA, 0, 0.25);
+        cv::circle(guide, center, 5, color, -1, cv::LINE_AA);
+    };
+
+    label_panel("P1 TL R270", 0, 0, cv::Scalar(255, 60, 60), 0, -18);
+    label_panel("P2 TR R90", panel_w, 0, cv::Scalar(60, 255, 60), 0, 18);
+    label_panel("P3 BL R270", 0, panel_h, cv::Scalar(60, 160, 255), 0, -18);
+    label_panel("P4 BR R90", panel_w, panel_h, cv::Scalar(255, 220, 80), 0, 18);
+
+    cv::putText(guide, "CHAIN: P3 P1 P2 P4", cv::Point(6, guide.rows - 10), cv::FONT_HERSHEY_SIMPLEX,
+                0.45, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+    cv::putText(guide, "CHAIN: P3 P1 P2 P4", cv::Point(6, guide.rows - 10), cv::FONT_HERSHEY_SIMPLEX,
+                0.45, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+
+    return guide;
 }
 
 std::vector<cv::Mat> preload_random_frames(const std::string& video_path, int width, int height, int count = 80) {
@@ -808,6 +879,18 @@ int main(int argc, char *argv[]) {
     if (matrix == nullptr) return 1;
 
     FrameCanvas *offscreen = matrix->CreateFrameCanvas();
+    const bool test_mode = env_to_bool("MATRIX_TEST_MODE", false);
+    const std::string TEST_IMAGE_PATH = "base.jpg";
+
+    if (test_mode) {
+        cv::Mat base = load_rgb_image_or_blank(TEST_IMAGE_PATH, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+        cv::Mat guide = make_orientation_guide(base);
+        while (true) {
+            draw_layout_to_matrix(offscreen, guide);
+            offscreen = matrix->SwapOnVSync(offscreen);
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+    }
 
     cv::VideoCapture cap(VIDEO_PATH);
     if (!cap.isOpened()) {
