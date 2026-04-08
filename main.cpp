@@ -853,7 +853,7 @@ cv::Mat apply_panel_transform(const cv::Mat& panel, int rotate_deg, bool flip_x,
     return transformed;
 }
 
-void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame, bool high_energy_orientation = false) {
+void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame, int orientation_variant = 0) {
     const int panel_w = logical_frame.cols / 2;
     const int panel_h = logical_frame.rows / 2;
 
@@ -870,12 +870,28 @@ void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame, bool hi
         bool flip_y;
     };
 
-    const PanelRoute routes[] = {
-        {"p3", src_p3, high_energy_orientation ? 270 : 90, false, false},
-        {"p1", src_p1, high_energy_orientation ? 270 : 90, false, false},
-        {"p2", src_p2, high_energy_orientation ? 90 : 270, false, false},
-        {"p4", src_p4, high_energy_orientation ? 90 : 270, false, false},
+    const PanelRoute normal_routes[] = {
+        {"p3", src_p3, 90, false, false},
+        {"p1", src_p1, 90, false, false},
+        {"p2", src_p2, 270, false, false},
+        {"p4", src_p4, 270, false, false},
     };
+    const PanelRoute alt_routes[] = {
+        {"p3", src_p3, 270, false, false},
+        {"p1", src_p1, 270, false, false},
+        {"p2", src_p2, 90, false, false},
+        {"p4", src_p4, 90, false, false},
+    };
+    const PanelRoute alt_flip_routes[] = {
+        {"p3", src_p3, 270, true, false},
+        {"p1", src_p1, 270, true, false},
+        {"p2", src_p2, 90, true, false},
+        {"p4", src_p4, 90, true, false},
+    };
+
+    const PanelRoute* routes = normal_routes;
+    if (orientation_variant == 1) routes = alt_routes;
+    else if (orientation_variant == 2) routes = alt_flip_routes;
 
     for (int slot = 0; slot < 4; ++slot) {
         cv::Mat panel = apply_panel_transform(logical_frame(routes[slot].source), routes[slot].rotate,
@@ -936,7 +952,7 @@ int main(int argc, char *argv[]) {
         cv::Mat base = load_rgb_image_or_blank(TEST_IMAGE_PATH, LOGICAL_WIDTH, LOGICAL_HEIGHT);
         cv::Mat guide = make_orientation_guide(base);
         while (true) {
-            draw_layout_to_matrix(offscreen, guide, false);
+            draw_layout_to_matrix(offscreen, guide, 0);
             offscreen = matrix->SwapOnVSync(offscreen);
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
         }
@@ -970,6 +986,8 @@ int main(int argc, char *argv[]) {
     auto last_kick = std::chrono::steady_clock::now();
     cv::Mat active_kick_frame;
     auto kick_frame_until = std::chrono::steady_clock::time_point::min();
+    int active_orientation_variant = 0;
+    auto orientation_variant_until = std::chrono::steady_clock::time_point::min();
 
     while (true) {
         AudioFeatures features = audio.getFeatures();
@@ -979,17 +997,29 @@ int main(int argc, char *argv[]) {
         auto now = std::chrono::steady_clock::now();
         float since_kick = std::chrono::duration<float>(now - last_kick).count();
 
-        const bool kick_detected = features.transient > 0.22f && features.low > 0.34f;
-        if (kick_detected && !kick_triggered && since_kick > 0.28f) {
+        const bool kick_detected = features.transient > 0.16f && features.low > 0.26f;
+        if (kick_detected && !kick_triggered && since_kick > 0.20f) {
             if (!random_buffer.empty()) {
-                int idx = rand() % random_buffer.size();
-                active_kick_frame = random_buffer[idx].clone();
-                kick_frame_until = now + std::chrono::milliseconds(220);
+                int best_idx = rand() % random_buffer.size();
+                double best_score = -1.0;
+                for (int attempt = 0; attempt < 6; ++attempt) {
+                    int idx = rand() % random_buffer.size();
+                    cv::Mat diff;
+                    cv::absdiff(frame, random_buffer[idx], diff);
+                    cv::Scalar score = cv::mean(diff);
+                    double total = score[0] + score[1] + score[2];
+                    if (total > best_score) {
+                        best_score = total;
+                        best_idx = idx;
+                    }
+                }
+                active_kick_frame = random_buffer[best_idx].clone();
+                kick_frame_until = now + std::chrono::milliseconds(420);
             }
             kick_triggered = true;
             last_kick = now;
         }
-        else if (features.low <= 0.24f && features.transient <= 0.16f) {
+        else if (features.low <= 0.18f && features.transient <= 0.10f) {
             kick_triggered = false;
         }
 
@@ -1021,9 +1051,16 @@ int main(int argc, char *argv[]) {
 
         cv::Mat out = visual.update(features);
 
-        const float orientation_energy = std::clamp(features.transient * 1.6f + features.high * 0.95f + features.rms * 0.55f, 0.0f, 1.0f);
-        const bool use_previous_orientation = orientation_energy > 0.82f;
-        draw_layout_to_matrix(offscreen, out, use_previous_orientation);
+        const float orientation_energy = std::clamp(features.transient * 1.75f + features.high * 1.05f + features.rms * 0.60f, 0.0f, 1.0f);
+        if (orientation_energy > 0.94f && since_kick > 0.90f) {
+            active_orientation_variant = 1 + (rand() % 2);
+            orientation_variant_until = now + std::chrono::milliseconds(180);
+        }
+        if (now >= orientation_variant_until) {
+            active_orientation_variant = 0;
+        }
+
+        draw_layout_to_matrix(offscreen, out, active_orientation_variant);
         offscreen = matrix->SwapOnVSync(offscreen);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60fps target
