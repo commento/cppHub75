@@ -1008,7 +1008,7 @@ int main(int argc, char *argv[]) {
             (features.transient > 0.06f && features.mid > 0.16f) ||
             (features.rms > 0.08f && features.mid > 0.14f) ||
             (features.rms > 0.12f);
-        if (kick_detected && since_kick > 0.14f) {
+        if (kick_detected && since_kick > 0.32f) {
             if (!random_buffer.empty()) {
                 int best_idx = rand() % random_buffer.size();
                 double best_score = -1.0;
