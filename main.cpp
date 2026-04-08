@@ -968,6 +968,8 @@ int main(int argc, char *argv[]) {
 
     bool kick_triggered = false;
     auto last_kick = std::chrono::steady_clock::now();
+    cv::Mat active_kick_frame;
+    auto kick_frame_until = std::chrono::steady_clock::time_point::min();
 
     while (true) {
         AudioFeatures features = audio.getFeatures();
@@ -977,18 +979,17 @@ int main(int argc, char *argv[]) {
         auto now = std::chrono::steady_clock::now();
         float since_kick = std::chrono::duration<float>(now - last_kick).count();
 
-        bool kick_frame_punch = false;
-        cv::Mat kick_frame;
-        if (features.transient > 0.28f && features.low > 0.45f && !kick_triggered && since_kick > 0.35f) {
+        const bool kick_detected = features.transient > 0.22f && features.low > 0.34f;
+        if (kick_detected && !kick_triggered && since_kick > 0.28f) {
             if (!random_buffer.empty()) {
                 int idx = rand() % random_buffer.size();
-                kick_frame = random_buffer[idx].clone();
-                kick_frame_punch = true;
+                active_kick_frame = random_buffer[idx].clone();
+                kick_frame_until = now + std::chrono::milliseconds(220);
             }
             kick_triggered = true;
             last_kick = now;
         }
-        else if (features.low <= 0.32f) {
+        else if (features.low <= 0.24f && features.transient <= 0.16f) {
             kick_triggered = false;
         }
 
@@ -1008,8 +1009,9 @@ int main(int argc, char *argv[]) {
             frame = random_buffer[idx].clone();
         }
 
-        if (kick_frame_punch) {
-            visual.base_img = kick_frame.clone();
+        const bool kick_frame_active = !active_kick_frame.empty() && now < kick_frame_until;
+        if (kick_frame_active) {
+            visual.base_img = active_kick_frame.clone();
         } else {
             visual.base_img = frame.clone();
         }
@@ -1019,8 +1021,8 @@ int main(int argc, char *argv[]) {
 
         cv::Mat out = visual.update(features);
 
-        const float orientation_energy = std::clamp(features.transient * 1.4f + features.high * 0.8f + features.rms * 0.5f, 0.0f, 1.0f);
-        const bool use_previous_orientation = orientation_energy > 0.58f;
+        const float orientation_energy = std::clamp(features.transient * 1.6f + features.high * 0.95f + features.rms * 0.55f, 0.0f, 1.0f);
+        const bool use_previous_orientation = orientation_energy > 0.82f;
         draw_layout_to_matrix(offscreen, out, use_previous_orientation);
         offscreen = matrix->SwapOnVSync(offscreen);
 
