@@ -977,15 +977,14 @@ int main(int argc, char *argv[]) {
         auto now = std::chrono::steady_clock::now();
         float since_kick = std::chrono::duration<float>(now - last_kick).count();
 
+        bool kick_frame_punch = false;
+        cv::Mat kick_frame;
         if (features.transient > 0.28f && features.low > 0.45f && !kick_triggered && since_kick > 0.35f) {
             if (!random_buffer.empty()) {
                 int idx = rand() % random_buffer.size();
-                visual.base_img = random_buffer[idx].clone();
-                visual.luma = visual.compute_luma(visual.base_img);
-                visual.edge_map = visual.compute_edge_map(visual.luma);
-                visual.motion_map = visual.compute_motion_map(visual.luma);
+                kick_frame = random_buffer[idx].clone();
+                kick_frame_punch = true;
             }
-
             kick_triggered = true;
             last_kick = now;
         }
@@ -1009,7 +1008,11 @@ int main(int argc, char *argv[]) {
             frame = random_buffer[idx].clone();
         }
 
-        visual.base_img = frame.clone();
+        if (kick_frame_punch) {
+            visual.base_img = kick_frame.clone();
+        } else {
+            visual.base_img = frame.clone();
+        }
         visual.luma = visual.compute_luma(visual.base_img);
         visual.edge_map = visual.compute_edge_map(visual.luma);
         visual.motion_map = visual.compute_motion_map(visual.luma);
