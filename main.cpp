@@ -668,7 +668,7 @@ public:
         return out;
     }
 
-    cv::Mat update(const AudioFeatures& f) {
+    cv::Mat update(const AudioFeatures& f, float kick_hold = 0.0f) {
         time_t += 0.05f;
 
         cv::Mat img = base_img.clone();
@@ -691,6 +691,13 @@ public:
 
         img = preserve_moving_areas(img);
         img = preserve_stillness(img, f.rms);
+
+        if (kick_hold > 0.01f) {
+            cv::Mat emphasized;
+            const float alpha = std::clamp(0.45f + kick_hold * 0.45f, 0.0f, 0.90f);
+            cv::addWeighted(img, 1.0f - alpha, base_img, alpha, 0.0, emphasized);
+            img = emphasized;
+        }
 
         if (clarity_gate < 0.45f) {
             cv::Mat clearer;
@@ -998,11 +1005,11 @@ int main(int argc, char *argv[]) {
         float since_kick = std::chrono::duration<float>(now - last_kick).count();
 
         const bool kick_detected = features.transient > 0.16f && features.low > 0.26f;
-        if (kick_detected && !kick_triggered && since_kick > 0.20f) {
+        if (kick_detected && !kick_triggered && since_kick > 0.16f) {
             if (!random_buffer.empty()) {
                 int best_idx = rand() % random_buffer.size();
                 double best_score = -1.0;
-                for (int attempt = 0; attempt < 6; ++attempt) {
+                for (int attempt = 0; attempt < 18; ++attempt) {
                     int idx = rand() % random_buffer.size();
                     cv::Mat diff;
                     cv::absdiff(frame, random_buffer[idx], diff);
@@ -1014,7 +1021,7 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 active_kick_frame = random_buffer[best_idx].clone();
-                kick_frame_until = now + std::chrono::milliseconds(420);
+                kick_frame_until = now + std::chrono::milliseconds(720);
             }
             kick_triggered = true;
             last_kick = now;
@@ -1040,6 +1047,11 @@ int main(int argc, char *argv[]) {
         }
 
         const bool kick_frame_active = !active_kick_frame.empty() && now < kick_frame_until;
+        float kick_hold = 0.0f;
+        if (kick_frame_active) {
+            float remaining = std::chrono::duration<float>(kick_frame_until - now).count();
+            kick_hold = std::clamp(remaining / 0.72f, 0.0f, 1.0f);
+        }
         if (kick_frame_active) {
             visual.base_img = active_kick_frame.clone();
         } else {
@@ -1049,7 +1061,7 @@ int main(int argc, char *argv[]) {
         visual.edge_map = visual.compute_edge_map(visual.luma);
         visual.motion_map = visual.compute_motion_map(visual.luma);
 
-        cv::Mat out = visual.update(features);
+        cv::Mat out = visual.update(features, kick_hold);
 
         const float orientation_energy = std::clamp(features.transient * 1.75f + features.high * 1.05f + features.rms * 0.60f, 0.0f, 1.0f);
         if (orientation_energy > 0.94f && since_kick > 0.90f) {
