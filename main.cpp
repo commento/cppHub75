@@ -553,12 +553,12 @@ public:
         cv::Mat luma8;
         cv::cvtColor(img, luma8, cv::COLOR_RGB2GRAY);
 
-        const int max_span = std::max(6, (int)(amount * 24.0f));
-        const int min_run = std::max(3, (int)(3 + amount * 8.0f));
-        const int threshold = std::clamp((int)(110 + threshold_bias * 60.0f + amount * 50.0f), 32, 220);
-        const bool vertical_pass = amount > 0.30f;
+        const int max_span = std::max(12, (int)(amount * 52.0f));
+        const int min_run = std::max(4, (int)(4 + amount * 12.0f));
+        const int threshold = std::clamp((int)(82 + threshold_bias * 45.0f + amount * 36.0f), 20, 210);
+        const bool vertical_pass = amount > 0.12f;
 
-        auto sort_segment = [&](int fixed, int start, int end, bool vertical) {
+        auto sort_segment = [&](int fixed, int start, int end, bool vertical, bool descending) {
             if (end - start < min_run) return;
 
             std::vector<std::pair<int, cv::Vec3b>> segment;
@@ -570,8 +570,8 @@ public:
                 segment.push_back({score, px});
             }
 
-            std::stable_sort(segment.begin(), segment.end(), [](const auto& a, const auto& b) {
-                return a.first < b.first;
+            std::stable_sort(segment.begin(), segment.end(), [descending](const auto& a, const auto& b) {
+                return descending ? a.first > b.first : a.first < b.first;
             });
 
             for (int pos = start; pos < end; ++pos) {
@@ -581,43 +581,42 @@ public:
             }
         };
 
-        for (int y = 0; y < img.rows; ++y) {
-            int x = 0;
-            while (x < img.cols) {
-                int strength = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
-                if (strength > threshold) {
-                    int start = x;
-                    while (x < img.cols && x - start < max_span) {
-                        int current = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
-                        if (current <= threshold) break;
-                        ++x;
+        auto run_pass = [&](bool vertical, int cutoff, bool invert) {
+            const int major = vertical ? img.cols : img.rows;
+            const int minor = vertical ? img.rows : img.cols;
+            for (int fixed = 0; fixed < major; ++fixed) {
+                int pos = 0;
+                while (pos < minor) {
+                    int strength = vertical
+                        ? luma8.at<uchar>(pos, fixed) + (int)(edge_map.at<float>(pos, fixed) * 255.0f)
+                        : luma8.at<uchar>(fixed, pos) + (int)(motion_map.at<float>(fixed, pos) * 255.0f);
+                    const bool active = invert ? strength < cutoff : strength > cutoff;
+                    if (active) {
+                        int start = pos;
+                        while (pos < minor && pos - start < max_span) {
+                            int current = vertical
+                                ? luma8.at<uchar>(pos, fixed) + (int)(edge_map.at<float>(pos, fixed) * 255.0f)
+                                : luma8.at<uchar>(fixed, pos) + (int)(motion_map.at<float>(fixed, pos) * 255.0f);
+                            const bool keep = invert ? current < cutoff : current > cutoff;
+                            if (!keep) break;
+                            ++pos;
+                        }
+                        const bool descending = ((fixed + start) % 2 == 0) ^ invert;
+                        sort_segment(fixed, start, pos, vertical, descending);
+                    } else {
+                        ++pos;
                     }
-                    sort_segment(y, start, x, false);
-                } else {
-                    ++x;
                 }
             }
-        }
+        };
+
+        run_pass(false, threshold, false);
+        run_pass(false, threshold - 18, true);
 
         if (!vertical_pass) return out;
 
-        for (int x = 0; x < img.cols; ++x) {
-            int y = 0;
-            while (y < img.rows) {
-                int strength = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
-                if (strength > threshold + 10) {
-                    int start = y;
-                    while (y < img.rows && y - start < max_span / 2) {
-                        int current = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
-                        if (current <= threshold + 10) break;
-                        ++y;
-                    }
-                    sort_segment(x, start, y, true);
-                } else {
-                    ++y;
-                }
-            }
-        }
+        run_pass(true, threshold + 6, false);
+        if (amount > 0.45f) run_pass(true, threshold - 10, true);
 
         return out;
     }
@@ -733,23 +732,41 @@ cv::Mat apply_panel_transform(const cv::Mat& panel, int rotate_deg, bool flip_x,
     return transformed;
 }
 
-cv::Mat remap_for_panel_layout(const cv::Mat& frame) {
-    const int panel_w = frame.cols / 2;
-    const int panel_h = frame.rows / 2;
+void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame) {
+    const int panel_w = logical_frame.cols / 2;
+    const int panel_h = logical_frame.rows / 2;
 
-    cv::Mat out(frame.rows, frame.cols, frame.type());
+    const cv::Rect src_p1(0, 0, panel_w, panel_h);
+    const cv::Rect src_p2(panel_w, 0, panel_w, panel_h);
+    const cv::Rect src_p3(0, panel_h, panel_w, panel_h);
+    const cv::Rect src_p4(panel_w, panel_h, panel_w, panel_h);
 
-    cv::Rect src_p1(panel_w, 0, panel_w, panel_h);
-    cv::Rect src_p2(0, panel_h, panel_w, panel_h);
-    cv::Rect src_p3(0, 0, panel_w, panel_h);
-    cv::Rect src_p4(panel_w, panel_h, panel_w, panel_h);
+    struct PanelRoute {
+        const char* name;
+        cv::Rect source;
+        int rotate;
+        bool flip_x;
+        bool flip_y;
+    };
 
-    apply_panel_transform(frame(src_p3), 270, false, false).copyTo(out(cv::Rect(0, 0, panel_w, panel_h)));
-    apply_panel_transform(frame(src_p1), 270, false, false).copyTo(out(cv::Rect(panel_w, 0, panel_w, panel_h)));
-    apply_panel_transform(frame(src_p2), 90, false, false).copyTo(out(cv::Rect(0, panel_h, panel_w, panel_h)));
-    apply_panel_transform(frame(src_p4), 90, false, false).copyTo(out(cv::Rect(panel_w, panel_h, panel_w, panel_h)));
+    const PanelRoute routes[] = {
+        {"p3", src_p3, 270, false, false},
+        {"p1", src_p1, 270, false, false},
+        {"p2", src_p2, 90, false, false},
+        {"p4", src_p4, 90, false, false},
+    };
 
-    return out;
+    for (int slot = 0; slot < 4; ++slot) {
+        cv::Mat panel = apply_panel_transform(logical_frame(routes[slot].source), routes[slot].rotate,
+                                              routes[slot].flip_x, routes[slot].flip_y);
+        const int dst_x = slot * panel_w;
+        for (int y = 0; y < panel.rows; ++y) {
+            for (int x = 0; x < panel.cols; ++x) {
+                cv::Vec3b px = panel.at<cv::Vec3b>(y, x);
+                canvas->SetPixel(dst_x + x, y, px[0], px[1], px[2]);
+            }
+        }
+    }
 }
 
 // --------------------------------------------
@@ -758,14 +775,14 @@ cv::Mat remap_for_panel_layout(const cv::Mat& frame) {
 int main(int argc, char *argv[]) {
     srand(time(nullptr));
 
-    // In rpi-rgb-led-matrix rows/cols sono la misura del singolo pannello.
-    // Per un 128x128 composto da 4 pannelli 64x64 il layout corretto e' 64x64, chain=2, parallel=2.
+    // Canvas fisico: 4 pannelli 64x64 in chain lineare.
+    // Contenuto logico: immagine 128x128 suddivisa in 4 quadranti.
     const int PANEL_ROWS = env_to_int("MATRIX_ROWS", 64);
     const int PANEL_COLS = env_to_int("MATRIX_COLS", 64);
     const int CHAIN_LENGTH = env_to_int("MATRIX_CHAIN", 4);
     const int PARALLEL = env_to_int("MATRIX_PARALLEL", 1);
-    const int WIDTH = PANEL_COLS * CHAIN_LENGTH;
-    const int HEIGHT = PANEL_ROWS * PARALLEL;
+    const int LOGICAL_WIDTH = PANEL_COLS * 2;
+    const int LOGICAL_HEIGHT = PANEL_ROWS * 2;
     const std::string VIDEO_PATH = "video.mov";
 
 #if defined(__linux__) && defined(SUPPRESS_ALSA_WARNINGS)
@@ -798,17 +815,17 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    std::vector<cv::Mat> random_buffer = preload_random_frames(VIDEO_PATH, WIDTH, HEIGHT, 100);
+    std::vector<cv::Mat> random_buffer = preload_random_frames(VIDEO_PATH, LOGICAL_WIDTH, LOGICAL_HEIGHT, 100);
     if (random_buffer.empty()) {
         std::cerr << "Buffer random vuoto.\n";
     }
 
     cv::Mat frame;
     cap.read(frame);
-    cv::resize(frame, frame, cv::Size(WIDTH, HEIGHT));
+    cv::resize(frame, frame, cv::Size(LOGICAL_WIDTH, LOGICAL_HEIGHT));
     cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
 
-    VisualEngine visual(frame, WIDTH, HEIGHT);
+    VisualEngine visual(frame, LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
     AudioAnalyzer audio;
     if (!audio.start()) {
@@ -844,7 +861,7 @@ int main(int argc, char *argv[]) {
 
         if (no_audio && has_frozen_frame) {
             // Se non c'e' audio, tieni l'ultimo frame processato fermo.
-            draw_to_matrix(offscreen, frozen_output);
+            draw_layout_to_matrix(offscreen, frozen_output);
             offscreen = matrix->SwapOnVSync(offscreen);
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
@@ -879,7 +896,7 @@ int main(int argc, char *argv[]) {
             cap.read(frame);
         }
 
-        cv::resize(frame, frame, cv::Size(WIDTH, HEIGHT));
+        cv::resize(frame, frame, cv::Size(LOGICAL_WIDTH, LOGICAL_HEIGHT));
         cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
 
         if (is_black_frame(frame) && !random_buffer.empty()) {
@@ -893,11 +910,10 @@ int main(int argc, char *argv[]) {
         visual.motion_map = visual.compute_motion_map(visual.luma);
 
         cv::Mat out = visual.update(features);
-        out = remap_for_panel_layout(out);
         frozen_output = out.clone();
         has_frozen_frame = true;
 
-        draw_to_matrix(offscreen, out);
+        draw_layout_to_matrix(offscreen, out);
         offscreen = matrix->SwapOnVSync(offscreen);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60fps target
