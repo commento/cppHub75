@@ -1004,7 +1004,9 @@ int main(int argc, char *argv[]) {
         auto now = std::chrono::steady_clock::now();
         float since_kick = std::chrono::duration<float>(now - last_kick).count();
 
-        const bool kick_detected = features.transient > 0.16f && features.low > 0.26f;
+        const bool kick_detected =
+            (features.transient > 0.14f && features.low > 0.24f) ||
+            (features.transient > 0.12f && features.mid > 0.30f);
         if (kick_detected && !kick_triggered && since_kick > 0.16f) {
             if (!random_buffer.empty()) {
                 int best_idx = rand() % random_buffer.size();
@@ -1015,18 +1017,18 @@ int main(int argc, char *argv[]) {
                     cv::absdiff(frame, random_buffer[idx], diff);
                     cv::Scalar score = cv::mean(diff);
                     double total = score[0] + score[1] + score[2];
-                    if (total > best_score) {
+                if (total > best_score) {
                         best_score = total;
                         best_idx = idx;
                     }
                 }
                 active_kick_frame = random_buffer[best_idx].clone();
-                kick_frame_until = now + std::chrono::milliseconds(720);
+                kick_frame_until = now + std::chrono::milliseconds(180);
             }
             kick_triggered = true;
             last_kick = now;
         }
-        else if (features.low <= 0.18f && features.transient <= 0.10f) {
+        else if (features.low <= 0.16f && features.mid <= 0.22f && features.transient <= 0.08f) {
             kick_triggered = false;
         }
 
@@ -1050,7 +1052,7 @@ int main(int argc, char *argv[]) {
         float kick_hold = 0.0f;
         if (kick_frame_active) {
             float remaining = std::chrono::duration<float>(kick_frame_until - now).count();
-            kick_hold = std::clamp(remaining / 0.72f, 0.0f, 1.0f);
+            kick_hold = std::clamp(remaining / 0.18f, 0.0f, 1.0f);
         }
         if (kick_frame_active) {
             visual.base_img = active_kick_frame.clone();
