@@ -6,7 +6,7 @@
 #include <portaudio.h>
 #include <fftw3.h>
 #include <mutex>
-#ifdef __linux__
+#if defined(__linux__) && defined(SUPPRESS_ALSA_WARNINGS)
 #include <alsa/asoundlib.h>
 #endif
 
@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 
+
 using rgb_matrix::RGBMatrix;
 using rgb_matrix::Canvas;
 using rgb_matrix::FrameCanvas;
@@ -33,7 +34,7 @@ struct AudioFeatures {
     float transient = 0.0f;
 };
 
-#ifdef __linux__
+#if defined(__linux__) && defined(SUPPRESS_ALSA_WARNINGS)
 static void silent_alsa_error_handler(const char*, int, const char*, int, const char*, ...) {}
 #endif
 
@@ -545,6 +546,82 @@ public:
         return out;
     }
 
+    cv::Mat pixel_sort(const cv::Mat& img, float amount, float threshold_bias = 0.0f) {
+        if (amount < 0.03f) return img.clone();
+
+        cv::Mat out = img.clone();
+        cv::Mat luma8;
+        cv::cvtColor(img, luma8, cv::COLOR_RGB2GRAY);
+
+        const int max_span = std::max(6, (int)(amount * 24.0f));
+        const int min_run = std::max(3, (int)(3 + amount * 8.0f));
+        const int threshold = std::clamp((int)(110 + threshold_bias * 60.0f + amount * 50.0f), 32, 220);
+        const bool vertical_pass = amount > 0.30f;
+
+        auto sort_segment = [&](int fixed, int start, int end, bool vertical) {
+            if (end - start < min_run) return;
+
+            std::vector<std::pair<int, cv::Vec3b>> segment;
+            segment.reserve(end - start);
+
+            for (int pos = start; pos < end; ++pos) {
+                cv::Vec3b px = vertical ? out.at<cv::Vec3b>(pos, fixed) : out.at<cv::Vec3b>(fixed, pos);
+                int score = px[0] * 77 + px[1] * 150 + px[2] * 29;
+                segment.push_back({score, px});
+            }
+
+            std::stable_sort(segment.begin(), segment.end(), [](const auto& a, const auto& b) {
+                return a.first < b.first;
+            });
+
+            for (int pos = start; pos < end; ++pos) {
+                const cv::Vec3b& px = segment[pos - start].second;
+                if (vertical) out.at<cv::Vec3b>(pos, fixed) = px;
+                else out.at<cv::Vec3b>(fixed, pos) = px;
+            }
+        };
+
+        for (int y = 0; y < img.rows; ++y) {
+            int x = 0;
+            while (x < img.cols) {
+                int strength = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
+                if (strength > threshold) {
+                    int start = x;
+                    while (x < img.cols && x - start < max_span) {
+                        int current = luma8.at<uchar>(y, x) + (int)(motion_map.at<float>(y, x) * 255.0f);
+                        if (current <= threshold) break;
+                        ++x;
+                    }
+                    sort_segment(y, start, x, false);
+                } else {
+                    ++x;
+                }
+            }
+        }
+
+        if (!vertical_pass) return out;
+
+        for (int x = 0; x < img.cols; ++x) {
+            int y = 0;
+            while (y < img.rows) {
+                int strength = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
+                if (strength > threshold + 10) {
+                    int start = y;
+                    while (y < img.rows && y - start < max_span / 2) {
+                        int current = luma8.at<uchar>(y, x) + (int)(edge_map.at<float>(y, x) * 255.0f);
+                        if (current <= threshold + 10) break;
+                        ++y;
+                    }
+                    sort_segment(x, start, y, true);
+                } else {
+                    ++y;
+                }
+            }
+        }
+
+        return out;
+    }
+
     cv::Mat update(const AudioFeatures& f) {
         time_t += 0.05f;
 
@@ -555,6 +632,7 @@ public:
         img = contour_displacement_static_only(img, f.mid * 1.4f + f.low * 0.4f);
         img = edge_rgb_glitch_static_only(img, f.high * 1.3f + f.mid * 0.5f);
         img = edge_color_burn_static_only(img, f.high * 1.1f + f.transient * 0.8f);
+        img = pixel_sort(img, std::clamp(f.mid * 0.9f + f.high * 0.7f + f.transient * 0.6f, 0.0f, 1.0f), f.low - 0.25f);
 
         img = preserve_moving_areas(img);
         img = preserve_stillness(img, f.rms);
@@ -580,6 +658,17 @@ bool is_black_frame(const cv::Mat& frame, int threshold = 18, float dark_ratio =
     }
 
     return ((float)dark / total) > dark_ratio;
+}
+
+int env_to_int(const char* name, int fallback) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) return fallback;
+
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return fallback;
+    }
 }
 
 std::vector<cv::Mat> preload_random_frames(const std::string& video_path, int width, int height, int count = 80) {
@@ -621,21 +710,65 @@ void draw_to_matrix(Canvas* canvas, const cv::Mat& frame) {
     }
 }
 
+cv::Mat apply_panel_transform(const cv::Mat& panel, int rotate_deg, bool flip_x, bool flip_y) {
+    cv::Mat transformed = panel.clone();
+
+    const int normalized = ((rotate_deg % 360) + 360) % 360;
+    if (normalized == 90) {
+        cv::rotate(transformed, transformed, cv::ROTATE_90_CLOCKWISE);
+    } else if (normalized == 180) {
+        cv::rotate(transformed, transformed, cv::ROTATE_180);
+    } else if (normalized == 270) {
+        cv::rotate(transformed, transformed, cv::ROTATE_90_COUNTERCLOCKWISE);
+    }
+
+    if (flip_x && flip_y) {
+        cv::flip(transformed, transformed, -1);
+    } else if (flip_x) {
+        cv::flip(transformed, transformed, 1);
+    } else if (flip_y) {
+        cv::flip(transformed, transformed, 0);
+    }
+
+    return transformed;
+}
+
+cv::Mat remap_for_panel_layout(const cv::Mat& frame) {
+    const int panel_w = frame.cols / 2;
+    const int panel_h = frame.rows / 2;
+
+    cv::Mat out(frame.rows, frame.cols, frame.type());
+
+    cv::Rect src_p1(panel_w, 0, panel_w, panel_h);
+    cv::Rect src_p2(0, panel_h, panel_w, panel_h);
+    cv::Rect src_p3(0, 0, panel_w, panel_h);
+    cv::Rect src_p4(panel_w, panel_h, panel_w, panel_h);
+
+    apply_panel_transform(frame(src_p3), 270, false, false).copyTo(out(cv::Rect(0, 0, panel_w, panel_h)));
+    apply_panel_transform(frame(src_p1), 270, false, false).copyTo(out(cv::Rect(panel_w, 0, panel_w, panel_h)));
+    apply_panel_transform(frame(src_p2), 90, false, false).copyTo(out(cv::Rect(0, panel_h, panel_w, panel_h)));
+    apply_panel_transform(frame(src_p4), 90, false, false).copyTo(out(cv::Rect(panel_w, panel_h, panel_w, panel_h)));
+
+    return out;
+}
+
 // --------------------------------------------
 // MAIN
 // --------------------------------------------
 int main(int argc, char *argv[]) {
     srand(time(nullptr));
 
-    const int PANEL_ROWS = 64;
-    const int PANEL_COLS = 64;
-    const int CHAIN_LENGTH = 2;
-    const int PARALLEL = 2;
+    // In rpi-rgb-led-matrix rows/cols sono la misura del singolo pannello.
+    // Per un 128x128 composto da 4 pannelli 64x64 il layout corretto e' 64x64, chain=2, parallel=2.
+    const int PANEL_ROWS = env_to_int("MATRIX_ROWS", 64);
+    const int PANEL_COLS = env_to_int("MATRIX_COLS", 64);
+    const int CHAIN_LENGTH = env_to_int("MATRIX_CHAIN", 2);
+    const int PARALLEL = env_to_int("MATRIX_PARALLEL", 2);
     const int WIDTH = PANEL_COLS * CHAIN_LENGTH;
     const int HEIGHT = PANEL_ROWS * PARALLEL;
     const std::string VIDEO_PATH = "video.mov";
 
-#ifdef __linux__
+#if defined(__linux__) && defined(SUPPRESS_ALSA_WARNINGS)
     // PortAudio/ALSA prova diversi PCM durante la discovery; disattiviamo il rumore su stderr.
     snd_lib_error_set_handler(silent_alsa_error_handler);
 #endif
@@ -646,11 +779,13 @@ int main(int argc, char *argv[]) {
     defaults.chain_length = CHAIN_LENGTH;
     defaults.parallel = PARALLEL;
     defaults.hardware_mapping = "regular";
-    defaults.brightness = 70;
+    defaults.brightness = env_to_int("MATRIX_BRIGHTNESS", 70);
     defaults.disable_hardware_pulsing = true;
+    defaults.row_address_type = env_to_int("MATRIX_ROW_ADDR_TYPE", 0);
+    defaults.multiplexing = env_to_int("MATRIX_MULTIPLEXING", 0);
 
     rgb_matrix::RuntimeOptions runtime;
-    runtime.gpio_slowdown = 4;
+    runtime.gpio_slowdown = env_to_int("MATRIX_GPIO_SLOWDOWN", 4);
 
     RGBMatrix *matrix = rgb_matrix::CreateMatrixFromOptions(defaults, runtime);
     if (matrix == nullptr) return 1;
@@ -707,13 +842,13 @@ int main(int argc, char *argv[]) {
 
         bool no_audio = silence_elapsed > SILENCE_HOLD_SEC;
 
-	if (no_audio && has_frozen_frame) {
-    	    // se non c'è audio, tieni l'ultimo frame già processato
-    	    draw_to_matrix(offscreen, frozen_output);
-    	    offscreen = matrix->SwapOnVSync(offscreen);
-    	    std::this_thread::sleep_for(std::chrono::milliseconds(16));
-    	    continue;
-	}
+        if (no_audio && has_frozen_frame) {
+            // Se non c'e' audio, tieni l'ultimo frame processato fermo.
+            draw_to_matrix(offscreen, frozen_output);
+            offscreen = matrix->SwapOnVSync(offscreen);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
         // --------------------------------
         // KICK JUMP con cooldown
         // --------------------------------
@@ -758,6 +893,9 @@ int main(int argc, char *argv[]) {
         visual.motion_map = visual.compute_motion_map(visual.luma);
 
         cv::Mat out = visual.update(features);
+        out = remap_for_panel_layout(out);
+        frozen_output = out.clone();
+        has_frozen_frame = true;
 
         draw_to_matrix(offscreen, out);
         offscreen = matrix->SwapOnVSync(offscreen);
