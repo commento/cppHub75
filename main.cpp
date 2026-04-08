@@ -6,6 +6,9 @@
 #include <portaudio.h>
 #include <fftw3.h>
 #include <mutex>
+#ifdef __linux__
+#include <alsa/asoundlib.h>
+#endif
 
 #include <iostream>
 #include <vector>
@@ -14,6 +17,9 @@
 #include <ctime>
 #include <chrono>
 #include <thread>
+#include <string>
+#include <algorithm>
+#include <cctype>
 
 using rgb_matrix::RGBMatrix;
 using rgb_matrix::Canvas;
@@ -31,10 +37,11 @@ class AudioAnalyzer {
 public:
     static constexpr int SAMPLE_RATE = 48000;
     static constexpr int FRAMES_PER_BUFFER = 1024;
-    static constexpr int CHANNELS = 2;
+    static constexpr int PREFERRED_CHANNELS = 2;
 
     PaStream* stream = nullptr;
     std::mutex mtx;
+    int input_channels = 0;
 
     AudioFeatures current_features;
 
@@ -68,13 +75,13 @@ public:
     }
 
     void processInput(const float* input, unsigned long framesPerBuffer) {
-        if (!input) return;
+        if (!input || input_channels <= 0) return;
 
         std::vector<float> mono(framesPerBuffer);
 
         for (unsigned long i = 0; i < framesPerBuffer; i++) {
-            float l = input[i * 2 + 0];
-            float r = input[i * 2 + 1];
+            float l = input[i * input_channels];
+            float r = (input_channels > 1) ? input[i * input_channels + 1] : l;
             mono[i] = 0.5f * (l + r);
         }
 
@@ -152,6 +159,56 @@ public:
         current_features.transient = transient_env;
     }
 
+    static std::string to_lower(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return (char)std::tolower(c);
+        });
+        return value;
+    }
+
+    int chooseInputDevice(int requestedDeviceIndex) {
+        if (requestedDeviceIndex >= 0) return requestedDeviceIndex;
+
+        const char* requested_name = std::getenv("AUDIO_DEVICE_SUBSTRING");
+        std::string requested_substring = requested_name ? to_lower(requested_name) : "";
+
+        int device_count = Pa_GetDeviceCount();
+        if (device_count < 0) return paNoDevice;
+
+        if (!requested_substring.empty()) {
+            for (int i = 0; i < device_count; ++i) {
+                const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
+                if (!info || info->maxInputChannels <= 0) continue;
+                if (to_lower(info->name).find(requested_substring) != std::string::npos) {
+                    return i;
+                }
+            }
+        }
+
+        int default_device = Pa_GetDefaultInputDevice();
+        if (default_device != paNoDevice) {
+            const PaDeviceInfo* info = Pa_GetDeviceInfo(default_device);
+            if (info && info->maxInputChannels > 0) {
+                return default_device;
+            }
+        }
+
+        int best_device = paNoDevice;
+        int best_channels = -1;
+
+        for (int i = 0; i < device_count; ++i) {
+            const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
+            if (!info || info->maxInputChannels <= 0) continue;
+
+            if (info->maxInputChannels > best_channels) {
+                best_device = i;
+                best_channels = info->maxInputChannels;
+            }
+        }
+
+        return best_device;
+    }
+
     bool start(int inputDeviceIndex = -1) {
         PaError err = Pa_Initialize();
         if (err != paNoError) {
@@ -159,9 +216,7 @@ public:
             return false;
         }
 
-        if (inputDeviceIndex < 0) {
-            inputDeviceIndex = Pa_GetDefaultInputDevice();
-        }
+        inputDeviceIndex = chooseInputDevice(inputDeviceIndex);
 
         if (inputDeviceIndex == paNoDevice) {
             std::cerr << "Nessun input audio trovato\n";
@@ -169,11 +224,18 @@ public:
         }
 
         const PaDeviceInfo* info = Pa_GetDeviceInfo(inputDeviceIndex);
-        std::cout << "Audio input: " << info->name << std::endl;
+        if (!info || info->maxInputChannels <= 0) {
+            std::cerr << "Device audio non valido\n";
+            return false;
+        }
+
+        input_channels = std::min(PREFERRED_CHANNELS, info->maxInputChannels);
+        std::cout << "Audio input: " << info->name
+                  << " (" << input_channels << "ch)" << std::endl;
 
         PaStreamParameters inputParams;
         inputParams.device = inputDeviceIndex;
-        inputParams.channelCount = CHANNELS;
+        inputParams.channelCount = input_channels;
         inputParams.sampleFormat = paFloat32;
         inputParams.suggestedLatency = info->defaultLowInputLatency;
         inputParams.hostApiSpecificStreamInfo = nullptr;
@@ -214,6 +276,7 @@ public:
             Pa_CloseStream(stream);
             stream = nullptr;
         }
+        input_channels = 0;
         Pa_Terminate();
     }
 };
@@ -560,15 +623,24 @@ void draw_to_matrix(Canvas* canvas, const cv::Mat& frame) {
 int main(int argc, char *argv[]) {
     srand(time(nullptr));
 
-    const int WIDTH = 64;
-    const int HEIGHT = 64;
+    const int PANEL_ROWS = 64;
+    const int PANEL_COLS = 64;
+    const int CHAIN_LENGTH = 2;
+    const int PARALLEL = 2;
+    const int WIDTH = PANEL_COLS * CHAIN_LENGTH;
+    const int HEIGHT = PANEL_ROWS * PARALLEL;
     const std::string VIDEO_PATH = "video.mov";
 
+#ifdef __linux__
+    // PortAudio/ALSA prova diversi PCM durante la discovery; disattiviamo il rumore su stderr.
+    snd_lib_error_set_handler([](const char*, int, const char*, int, const char*, ...) {});
+#endif
+
     rgb_matrix::RGBMatrix::Options defaults;
-    defaults.rows = 64;
-    defaults.cols = 64;
-    defaults.chain_length = 1;
-    defaults.parallel = 1;
+    defaults.rows = PANEL_ROWS;
+    defaults.cols = PANEL_COLS;
+    defaults.chain_length = CHAIN_LENGTH;
+    defaults.parallel = PARALLEL;
     defaults.hardware_mapping = "regular";
     defaults.brightness = 70;
     defaults.disable_hardware_pulsing = true;
