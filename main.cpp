@@ -762,8 +762,8 @@ int main(int argc, char *argv[]) {
     // Per un 128x128 composto da 4 pannelli 64x64 il layout corretto e' 64x64, chain=2, parallel=2.
     const int PANEL_ROWS = env_to_int("MATRIX_ROWS", 64);
     const int PANEL_COLS = env_to_int("MATRIX_COLS", 64);
-    const int CHAIN_LENGTH = env_to_int("MATRIX_CHAIN", 2);
-    const int PARALLEL = env_to_int("MATRIX_PARALLEL", 2);
+    const int CHAIN_LENGTH = env_to_int("MATRIX_CHAIN", 4);
+    const int PARALLEL = env_to_int("MATRIX_PARALLEL", 1);
     const int WIDTH = PANEL_COLS * CHAIN_LENGTH;
     const int HEIGHT = PANEL_ROWS * PARALLEL;
     const std::string VIDEO_PATH = "video.mov";
