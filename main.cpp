@@ -33,6 +33,10 @@ struct AudioFeatures {
     float transient = 0.0f;
 };
 
+#ifdef __linux__
+static void silent_alsa_error_handler(const char*, int, const char*, int, const char*, ...) {}
+#endif
+
 class AudioAnalyzer {
 public:
     static constexpr int SAMPLE_RATE = 48000;
@@ -633,7 +637,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef __linux__
     // PortAudio/ALSA prova diversi PCM durante la discovery; disattiviamo il rumore su stderr.
-    snd_lib_error_set_handler([](const char*, int, const char*, int, const char*, ...) {});
+    snd_lib_error_set_handler(silent_alsa_error_handler);
 #endif
 
     rgb_matrix::RGBMatrix::Options defaults;
