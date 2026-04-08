@@ -312,6 +312,7 @@ public:
     float time_t = 0.0f;
 
     cv::Mat base_img;      // RGB
+    cv::Mat prev_output;   // RGB
     cv::Mat prev_luma;     // float
     cv::Mat luma;          // float
     cv::Mat edge_map;      // float
@@ -321,6 +322,7 @@ public:
         : width(w), height(h)
     {
         base_img = initial_frame.clone();
+        prev_output = initial_frame.clone();
         luma = compute_luma(base_img);
         edge_map = compute_edge_map(luma);
         prev_luma = luma.clone();
@@ -566,6 +568,38 @@ public:
         return out;
     }
 
+    cv::Mat datamosh_kick(const cv::Mat& img, float amount) {
+        if (amount < 0.04f || prev_output.empty()) return img.clone();
+
+        cv::Mat out = img.clone();
+        cv::Mat displaced_prev = prev_output.clone();
+
+        const int band_h = std::max(2, (int)(2 + amount * 10.0f));
+        const int max_shift = std::max(2, (int)(2 + amount * 18.0f));
+
+        for (int y = 0; y < img.rows; y += band_h) {
+            int h = std::min(band_h, img.rows - y);
+            int shift = (int)std::lround(std::sin(time_t * 3.5f + y * 0.11f) * max_shift);
+            cv::Rect band_rect(0, y, img.cols, h);
+            cv::Mat band = prev_output(band_rect);
+            cv::Mat shifted = shift_image(band, shift, 0);
+            shifted.copyTo(displaced_prev(band_rect));
+        }
+
+        cv::Mat edge_mask = edge_map > std::max(0.10f, 0.22f - amount * 0.08f);
+        cv::Mat motion_mask = motion_map > std::max(0.06f, 0.18f - amount * 0.10f);
+        cv::Mat mash_mask;
+        cv::bitwise_or(edge_mask, motion_mask, mash_mask);
+
+        cv::Mat blended;
+        cv::addWeighted(img, 1.0f - std::min(0.78f, amount * 0.70f),
+                        displaced_prev, std::min(0.78f, amount * 0.70f),
+                        0.0, blended);
+        blended.copyTo(out, mash_mask);
+
+        return out;
+    }
+
     cv::Mat pixel_sort(const cv::Mat& img, float amount, float left_level, float right_level,
                        float threshold_bias = 0.0f) {
         if (amount < 0.03f) return img.clone();
@@ -646,10 +680,12 @@ public:
         const float glitch_amt = (f.high * 1.3f + f.mid * 0.5f) * clarity_gate;
         const float burn_amt = (f.high * 1.1f + f.transient * 0.8f) * (0.15f + 0.85f * clarity_gate);
         const float sort_amt = std::clamp(f.mid * 0.9f + f.high * 0.7f + f.transient * 0.8f, 0.0f, 1.0f) * clarity_gate;
+        const float datamosh_amt = std::clamp(f.transient * 1.5f + f.low * 0.9f + f.rms * 0.35f - 0.18f, 0.0f, 1.0f);
 
         img = background_mass_displacement(img, motion_amt);
         img = contour_displacement_static_only(img, contour_amt);
         img = edge_rgb_glitch_static_only(img, glitch_amt);
+        img = datamosh_kick(img, datamosh_amt);
         img = edge_color_burn_static_only(img, burn_amt);
         img = pixel_sort(img, sort_amt, f.left, f.right, f.low - 0.25f);
 
@@ -663,6 +699,8 @@ public:
             cv::addWeighted(img, 1.0f - alpha, base_img, alpha, 0.0, clearer);
             img = clearer;
         }
+
+        prev_output = img.clone();
 
         return img;
     }
