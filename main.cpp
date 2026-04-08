@@ -694,7 +694,7 @@ public:
 
         if (kick_hold > 0.01f) {
             cv::Mat emphasized;
-            const float alpha = std::clamp(0.72f + kick_hold * 0.22f, 0.0f, 0.96f);
+            const float alpha = std::clamp(0.50f + kick_hold * 0.18f, 0.0f, 0.78f);
             cv::addWeighted(img, 1.0f - alpha, base_img, alpha, 0.0, emphasized);
             img = emphasized;
         }
@@ -1004,11 +1004,11 @@ int main(int argc, char *argv[]) {
         float since_kick = std::chrono::duration<float>(now - last_kick).count();
 
         const bool kick_detected =
-            (features.transient > 0.07f && features.low > 0.16f) ||
-            (features.transient > 0.05f && features.mid > 0.14f) ||
-            (features.rms > 0.07f && features.mid > 0.12f) ||
-            (features.rms > 0.10f);
-        if (kick_detected && since_kick > 0.10f) {
+            (features.transient > 0.08f && features.low > 0.18f) ||
+            (features.transient > 0.06f && features.mid > 0.16f) ||
+            (features.rms > 0.08f && features.mid > 0.14f) ||
+            (features.rms > 0.12f);
+        if (kick_detected && since_kick > 0.14f) {
             if (!random_buffer.empty()) {
                 int best_idx = rand() % random_buffer.size();
                 double best_score = -1.0;
@@ -1024,7 +1024,7 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 active_kick_frame = random_buffer[best_idx].clone();
-                kick_frame_until = now + std::chrono::milliseconds(95);
+                kick_frame_until = now + std::chrono::milliseconds(45);
             }
             last_kick = now;
         }
@@ -1049,7 +1049,7 @@ int main(int argc, char *argv[]) {
         float kick_hold = 0.0f;
         if (kick_frame_active) {
             float remaining = std::chrono::duration<float>(kick_frame_until - now).count();
-            kick_hold = std::clamp(remaining / 0.095f, 0.0f, 1.0f);
+            kick_hold = std::clamp(remaining / 0.045f, 0.0f, 1.0f);
         }
         if (kick_frame_active) {
             visual.base_img = active_kick_frame.clone();
