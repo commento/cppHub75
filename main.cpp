@@ -821,10 +821,10 @@ void draw_layout_to_matrix(Canvas* canvas, const cv::Mat& logical_frame) {
     };
 
     const PanelRoute routes[] = {
-        {"p3", src_p3, 270, false, false},
-        {"p1", src_p1, 270, false, false},
-        {"p2", src_p2, 90, false, false},
-        {"p4", src_p4, 90, false, false},
+        {"p3", src_p3, 90, false, false},
+        {"p1", src_p1, 90, false, false},
+        {"p2", src_p2, 270, false, false},
+        {"p4", src_p4, 270, false, false},
     };
 
     for (int slot = 0; slot < 4; ++slot) {
