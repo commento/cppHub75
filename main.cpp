@@ -20,6 +20,11 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#if defined(__linux__) || defined(__APPLE__)
+#include <termios.h>
+#include <unistd.h>
+#include <fcntl.h>
+#endif
 
 
 using rgb_matrix::RGBMatrix;
@@ -39,6 +44,50 @@ struct AudioFeatures {
 #if defined(__linux__) && defined(SUPPRESS_ALSA_WARNINGS)
 static void silent_alsa_error_handler(const char*, int, const char*, int, const char*, ...) {}
 #endif
+
+class KeyboardInput {
+public:
+    KeyboardInput() {
+#if defined(__linux__) || defined(__APPLE__)
+        if (!isatty(STDIN_FILENO)) return;
+        enabled_ = true;
+        tcgetattr(STDIN_FILENO, &original_);
+        termios raw = original_;
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        original_flags_ = fcntl(STDIN_FILENO, F_GETFL, 0);
+        fcntl(STDIN_FILENO, F_SETFL, original_flags_ | O_NONBLOCK);
+#endif
+    }
+
+    ~KeyboardInput() {
+#if defined(__linux__) || defined(__APPLE__)
+        if (!enabled_) return;
+        tcsetattr(STDIN_FILENO, TCSANOW, &original_);
+        fcntl(STDIN_FILENO, F_SETFL, original_flags_);
+#endif
+    }
+
+    int read_key() {
+#if defined(__linux__) || defined(__APPLE__)
+        if (!enabled_) return -1;
+        unsigned char ch = 0;
+        ssize_t n = ::read(STDIN_FILENO, &ch, 1);
+        return n == 1 ? (int)ch : -1;
+#else
+        return -1;
+#endif
+    }
+
+private:
+#if defined(__linux__) || defined(__APPLE__)
+    termios original_{};
+    int original_flags_ = 0;
+#endif
+    bool enabled_ = false;
+};
 
 class AudioAnalyzer {
 public:
@@ -989,13 +1038,28 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    KeyboardInput keyboard;
+    bool paused = false;
+
     auto last_kick = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
     cv::Mat active_kick_frame;
     auto kick_frame_until = std::chrono::steady_clock::time_point::min();
     int active_orientation_variant = 0;
     auto orientation_variant_until = std::chrono::steady_clock::time_point::min();
+    auto next_random_jump = std::chrono::steady_clock::now() + std::chrono::seconds(240 + rand() % 121);
 
     while (true) {
+        for (int key = keyboard.read_key(); key != -1; key = keyboard.read_key()) {
+            if (key == 'p' || key == 'P' || key == ' ') {
+                paused = !paused;
+                std::cout << (paused ? "Playback paused" : "Playback resumed") << std::endl;
+            } else if (key == 'q' || key == 'Q') {
+                audio.stop();
+                delete matrix;
+                return 0;
+            }
+        }
+
         AudioFeatures features = audio.getFeatures();
         // --------------------------------
         // KICK JUMP con cooldown
@@ -1029,16 +1093,23 @@ int main(int argc, char *argv[]) {
             last_kick = now;
         }
 
+        if (!random_buffer.empty() && now >= next_random_jump) {
+            active_kick_frame = random_buffer[rand() % random_buffer.size()].clone();
+            kick_frame_until = now + std::chrono::milliseconds(90);
+            next_random_jump = now + std::chrono::seconds(240 + rand() % 121);
+        }
+
         // --------------------------------
         // Playback normale
         // --------------------------------
-        if (!cap.read(frame)) {
-            cap.set(cv::CAP_PROP_POS_FRAMES, 0);
-            cap.read(frame);
+        if (!paused) {
+            if (!cap.read(frame)) {
+                cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+                cap.read(frame);
+            }
+            cv::resize(frame, frame, cv::Size(LOGICAL_WIDTH, LOGICAL_HEIGHT));
+            cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
         }
-
-        cv::resize(frame, frame, cv::Size(LOGICAL_WIDTH, LOGICAL_HEIGHT));
-        cv::cvtColor(frame, frame, cv::COLOR_BGR2RGB);
 
         if (is_black_frame(frame) && !random_buffer.empty()) {
             int idx = rand() % random_buffer.size();
