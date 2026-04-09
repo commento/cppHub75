@@ -1195,7 +1195,7 @@ int main(int argc, char *argv[]) {
         cv::Mat out = visual.update(features, kick_hold);
 
         const float orientation_energy = std::clamp(features.transient * 1.75f + features.high * 1.05f + features.rms * 0.60f, 0.0f, 1.0f);
-        if (orientation_energy > 0.94f && since_kick > 0.90f) {
+        if (orientation_energy > 0.86f && since_kick > 0.70f) {
             active_orientation_variant = 1 + (rand() % 2);
             orientation_variant_until = now + std::chrono::milliseconds(180);
         }
