@@ -530,6 +530,67 @@ public:
         return out;
     }
 
+    cv::Mat edge_boundary_wobble_static_only(const cv::Mat& img, float amount) {
+        if (amount < 0.02f) return img.clone();
+
+        cv::Mat edge_mask = get_edge_static_mask(0.17f, 0.18f);
+        cv::Mat edge_ring;
+        cv::dilate(edge_mask, edge_ring, cv::Mat(), cv::Point(-1, -1), 1);
+        cv::Mat inner_edge;
+        cv::erode(edge_mask, inner_edge, cv::Mat(), cv::Point(-1, -1), 1);
+        cv::bitwise_xor(edge_ring, inner_edge, edge_ring);
+
+        int dx1 = (int)std::lround(std::sin(time_t * 2.4f + 0.7f) * (1 + amount * 4));
+        int dy1 = (int)std::lround(std::cos(time_t * 1.9f + 1.3f) * (1 + amount * 3));
+        int dx2 = (int)std::lround(std::sin(time_t * 3.7f + 2.1f) * (1 + amount * 5));
+        int dy2 = (int)std::lround(std::cos(time_t * 2.8f + 0.2f) * (1 + amount * 2));
+
+        cv::Mat shifted1 = shift_image(img, dx1, dy1);
+        cv::Mat shifted2 = shift_image(img, dx2, dy2);
+        cv::Mat warped;
+        cv::addWeighted(shifted1, 0.55, shifted2, 0.45, 0.0, warped);
+
+        // Local horizontal pixel-sorting on the edge boundary ring only.
+        for (int y = 0; y < warped.rows; ++y) {
+            int x = 0;
+            while (x < warped.cols) {
+                if (!edge_ring.at<uchar>(y, x)) {
+                    ++x;
+                    continue;
+                }
+
+                int start = x;
+                while (x < warped.cols && edge_ring.at<uchar>(y, x)) ++x;
+                int end = x;
+                if (end - start < 2) continue;
+
+                std::vector<std::pair<int, cv::Vec3b>> segment;
+                segment.reserve(end - start);
+                for (int sx = start; sx < end; ++sx) {
+                    cv::Vec3b px = warped.at<cv::Vec3b>(y, sx);
+                    int score = px[0] * 77 + px[1] * 150 + px[2] * 29;
+                    segment.push_back({score, px});
+                }
+
+                const bool descending = ((y + start) % 2 == 0);
+                std::stable_sort(segment.begin(), segment.end(), [descending](const auto& a, const auto& b) {
+                    return descending ? a.first > b.first : a.first < b.first;
+                });
+
+                for (int sx = start; sx < end; ++sx) {
+                    warped.at<cv::Vec3b>(y, sx) = segment[sx - start].second;
+                }
+            }
+        }
+
+        cv::Mat out = img.clone();
+        warped.copyTo(out, edge_ring);
+
+        cv::Mat stable_core = get_edge_static_mask(0.24f, 0.16f);
+        img.copyTo(out, stable_core);
+        return out;
+    }
+
     cv::Mat edge_rgb_glitch_static_only(const cv::Mat& img, float amount) {
         if (amount < 0.02f) return img.clone();
 
@@ -732,7 +793,7 @@ public:
         const float datamosh_amt = std::clamp(f.transient * 1.5f + f.low * 0.9f + f.rms * 0.35f - 0.18f, 0.0f, 1.0f);
 
         img = background_mass_displacement(img, motion_amt);
-        img = contour_displacement_static_only(img, contour_amt);
+        img = edge_boundary_wobble_static_only(img, contour_amt);
         img = edge_rgb_glitch_static_only(img, glitch_amt);
         img = datamosh_kick(img, datamosh_amt);
         img = edge_color_burn_static_only(img, burn_amt);
