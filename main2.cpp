@@ -360,68 +360,52 @@ class ConstellationEngine {
 public:
     static constexpr float kTau = 6.28318530718f;
 
-    struct StarNode {
-        cv::Point3f anchor;
-        cv::Point3f drift;
-        float size = 1.0f;
+    struct MapNode {
+        cv::Point2f anchor;
+        cv::Point2f drift;
         float phase = 0.0f;
-        float twinkle = 0.0f;
-        float depth_bias = 0.0f;
+        float size = 1.0f;
         std::array<float, 3> color {1.0f, 1.0f, 1.0f};
     };
 
-    struct ProjectedStar {
+    struct ProjectedNode {
         cv::Point2f pos;
-        float depth = 0.0f;
         float intensity = 0.0f;
         float size = 1.0f;
         std::array<float, 3> color {1.0f, 1.0f, 1.0f};
+        std::string label;
     };
 
     int width, height;
     float time_t = 0.0f;
-    std::vector<StarNode> stars;
+    std::vector<MapNode> nodes;
+    std::vector<std::pair<int, int>> routes;
     cv::Mat prev_output;
 
     explicit ConstellationEngine(int w, int h)
         : width(w), height(h), prev_output(h, w, CV_8UC3, cv::Scalar(0, 0, 0))
     {
-        seed_stars(52);
+        seed_nodes();
     }
 
-    void seed_stars(int count) {
-        stars.clear();
-        stars.reserve(count);
+    void seed_nodes() {
+        nodes = {
+            {cv::Point2f(0.16f, 0.18f), cv::Point2f(0.018f, 0.016f), 0.10f, 2.4f, {0.78f, 0.82f, 1.00f}},
+            {cv::Point2f(0.38f, 0.12f), cv::Point2f(0.014f, 0.020f), 0.60f, 2.2f, {0.68f, 0.90f, 1.00f}},
+            {cv::Point2f(0.70f, 0.20f), cv::Point2f(0.016f, 0.014f), 1.20f, 2.6f, {1.00f, 0.78f, 0.88f}},
+            {cv::Point2f(0.84f, 0.37f), cv::Point2f(0.015f, 0.018f), 1.80f, 2.3f, {0.92f, 0.82f, 1.00f}},
+            {cv::Point2f(0.58f, 0.47f), cv::Point2f(0.017f, 0.015f), 2.20f, 2.5f, {0.76f, 0.96f, 0.92f}},
+            {cv::Point2f(0.28f, 0.42f), cv::Point2f(0.020f, 0.013f), 2.80f, 2.1f, {0.88f, 0.90f, 1.00f}},
+            {cv::Point2f(0.18f, 0.66f), cv::Point2f(0.015f, 0.021f), 3.30f, 2.7f, {1.00f, 0.84f, 0.78f}},
+            {cv::Point2f(0.47f, 0.76f), cv::Point2f(0.016f, 0.017f), 3.80f, 2.4f, {0.78f, 0.88f, 1.00f}},
+            {cv::Point2f(0.77f, 0.72f), cv::Point2f(0.019f, 0.014f), 4.40f, 2.5f, {0.86f, 1.00f, 0.90f}}
+        };
 
-        for (int i = 0; i < count; ++i) {
-            const float radius = 0.18f + ((float) rand() / RAND_MAX) * 1.05f;
-            const float azimuth = ((float) rand() / RAND_MAX) * kTau;
-            const float elevation = (((float) rand() / RAND_MAX) - 0.5f) * 1.45f;
-
-            StarNode node;
-            node.anchor = cv::Point3f(
-                std::cos(azimuth) * std::cos(elevation) * radius,
-                std::sin(elevation) * radius * 0.85f,
-                std::sin(azimuth) * std::cos(elevation) * radius
-            );
-            node.drift = cv::Point3f(
-                (((float) rand() / RAND_MAX) - 0.5f) * 0.45f,
-                (((float) rand() / RAND_MAX) - 0.5f) * 0.30f,
-                (((float) rand() / RAND_MAX) - 0.5f) * 0.55f
-            );
-            node.size = 0.8f + ((float) rand() / RAND_MAX) * 2.1f;
-            node.phase = ((float) rand() / RAND_MAX) * kTau;
-            node.twinkle = 0.7f + ((float) rand() / RAND_MAX) * 2.4f;
-            node.depth_bias = ((float) rand() / RAND_MAX) * 0.55f;
-
-            const float tint = (float) i / std::max(1, count - 1);
-            node.color = {
-                0.58f + 0.42f * tint,
-                0.62f + 0.18f * (1.0f - tint),
-                0.95f + 0.05f * std::sin(node.phase)
-            };
-            stars.push_back(node);
-        }
+        routes = {
+            {0, 1}, {1, 2}, {2, 3},
+            {1, 5}, {5, 6}, {5, 4},
+            {4, 8}, {4, 7}, {7, 6}
+        };
     }
 
     static float clamp01(float v) {
@@ -449,24 +433,24 @@ public:
         }
     }
 
-    void draw_star(cv::Mat& img, const ProjectedStar& star, float transient) const {
-        const int radius = std::clamp((int)std::lround(star.size + transient * 2.4f), 1, 5);
+    void draw_node(cv::Mat& img, const ProjectedNode& node, float transient) const {
+        const int radius = std::clamp((int)std::lround(node.size + transient * 1.6f), 2, 4);
         for (int oy = -radius; oy <= radius; ++oy) {
             for (int ox = -radius; ox <= radius; ++ox) {
                 const float dist = std::sqrt((float)(ox * ox + oy * oy));
                 if (dist > radius + 0.35f) continue;
                 const float core = clamp01(1.0f - dist / (radius + 0.35f));
-                const float glow = star.intensity * (0.45f + 0.55f * core);
+                const float glow = node.intensity * (0.42f + 0.58f * core);
                 add_pixel(img,
-                          (int)std::lround(star.pos.x) + ox,
-                          (int)std::lround(star.pos.y) + oy,
-                          make_color(star.color[0], star.color[1], star.color[2], glow),
+                          (int)std::lround(node.pos.x) + ox,
+                          (int)std::lround(node.pos.y) + oy,
+                          make_color(node.color[0], node.color[1], node.color[2], glow),
                           clamp01(0.25f + core * 0.75f));
             }
         }
     }
 
-    void draw_connection(cv::Mat& img, const ProjectedStar& a, const ProjectedStar& b, float intensity) const {
+    void draw_connection(cv::Mat& img, const ProjectedNode& a, const ProjectedNode& b, float intensity) const {
         const cv::Vec3b color = make_color(
             (a.color[0] + b.color[0]) * 0.5f,
             (a.color[1] + b.color[1]) * 0.5f,
@@ -476,67 +460,94 @@ public:
         cv::line(img, a.pos, b.pos, cv::Scalar(color[0], color[1], color[2]), 1, cv::LINE_AA);
     }
 
-    cv::Point2f swirl_point(const cv::Point2f& p, const AudioFeatures& f) const {
-        const float cx = width * 0.5f;
-        const float cy = height * 0.5f;
-        const float dx = p.x - cx;
-        const float dy = p.y - cy;
-        const float radius = std::sqrt(dx * dx + dy * dy) + 1e-4f;
-
-        const float angle = std::atan2(dy, dx) + std::sin(time_t * 0.55f + radius * 0.045f) * (0.06f + f.low * 0.33f);
-        const float warp = 1.0f + std::sin(time_t * 0.9f + radius * 0.03f) * (0.01f + f.transient * 0.08f);
-        return cv::Point2f(
-            cx + std::cos(angle) * radius * warp,
-            cy + std::sin(angle) * radius * warp
-        );
+    cv::Point2f distort_point(const cv::Point2f& p, const AudioFeatures& f) const {
+        const float wave_x = std::sin(time_t * 0.70f + p.y * 0.045f) * (1.6f + f.low * 6.0f);
+        const float wave_y = std::cos(time_t * 0.50f + p.x * 0.035f) * (1.2f + f.mid * 4.0f);
+        return cv::Point2f(p.x + wave_x, p.y + wave_y);
     }
 
-    ProjectedStar project_star(const StarNode& node, const AudioFeatures& f, float orbit_phase) const {
-        const float breath = 0.10f + f.low * 0.40f;
-        const float shimmer = 0.02f + f.high * 0.10f;
-        const float pulse = std::sin(time_t * node.twinkle + node.phase);
-        const float orbital = orbit_phase + node.phase * 0.12f;
+    std::string make_label(const cv::Point2f& normalized) const {
+        const int gx = std::clamp((int)std::lround(normalized.x * 99.0f), 0, 99);
+        const int gy = std::clamp((int)std::lround(normalized.y * 99.0f), 0, 99);
+        return std::to_string(gx) + "," + std::to_string(gy);
+    }
 
-        cv::Point3f pos = node.anchor;
-        pos.x += std::cos(orbital + node.phase) * node.drift.x * breath;
-        pos.y += std::sin(orbital * 0.8f + node.phase * 0.6f) * node.drift.y * (0.65f + f.mid * 0.7f);
-        pos.z += std::sin(orbital * 1.1f + node.phase) * node.drift.z * (0.85f + f.low * 0.9f);
-
-        pos.x += std::sin(time_t * 1.4f + node.phase * 2.0f) * shimmer;
-        pos.y += std::cos(time_t * 1.7f + node.phase * 1.3f) * shimmer;
-        pos.z += std::sin(time_t * 0.9f + node.phase * 0.8f) * (0.05f + f.transient * 0.18f);
-
-        const float rot = time_t * (0.08f + f.rms * 0.35f);
-        const float rx = pos.x * std::cos(rot) - pos.z * std::sin(rot);
-        const float rz = pos.x * std::sin(rot) + pos.z * std::cos(rot);
-
-        const float depth = rz + 2.4f + node.depth_bias;
-        const float perspective = 0.78f / std::max(0.45f, depth);
-        cv::Point2f screen(
-            width * 0.5f + rx * perspective * width * 0.55f,
-            height * 0.5f + pos.y * perspective * height * 0.70f
+    void draw_label(cv::Mat& img, const ProjectedNode& node, int index, float flicker) const {
+        const bool right_side = index % 2 == 0;
+        const int tx = (int)std::lround(node.pos.x) + (right_side ? 6 : -30);
+        const int ty = (int)std::lround(node.pos.y) + ((index % 3) - 1) * 5;
+        const cv::Scalar ink(
+            to_u8((0.34f + flicker * 0.30f) * 255.0f),
+            to_u8((0.36f + flicker * 0.18f) * 255.0f),
+            to_u8((0.58f + flicker * 0.34f) * 255.0f)
         );
-        screen = swirl_point(screen, f);
+        cv::putText(img, node.label, cv::Point(tx, ty), cv::FONT_HERSHEY_PLAIN, 0.55, cv::Scalar(0, 0, 0), 2, cv::LINE_AA);
+        cv::putText(img, node.label, cv::Point(tx, ty), cv::FONT_HERSHEY_PLAIN, 0.55, ink, 1, cv::LINE_AA);
+    }
 
-        ProjectedStar projected;
+    ProjectedNode project_node(const MapNode& node, const AudioFeatures& f, int index) const {
+        const float drift_x = std::sin(time_t * 0.45f + node.phase) * node.drift.x * (1.0f + f.low * 1.7f);
+        const float drift_y = std::cos(time_t * 0.38f + node.phase * 1.2f) * node.drift.y * (1.0f + f.mid * 1.4f);
+        const float roam_x = std::sin(time_t * 0.22f + index * 0.9f) * 0.010f;
+        const float roam_y = std::cos(time_t * 0.25f + index * 1.1f) * 0.012f;
+
+        cv::Point2f normalized(
+            clamp01(node.anchor.x + drift_x + roam_x),
+            clamp01(node.anchor.y + drift_y + roam_y)
+        );
+
+        cv::Point2f screen(normalized.x * (width - 1), normalized.y * (height - 1));
+        screen = distort_point(screen, f);
+
+        ProjectedNode projected;
         projected.pos = screen;
-        projected.depth = depth;
-        projected.intensity = clamp01(0.28f + (pulse * 0.5f + 0.5f) * 0.42f + f.high * 0.34f + f.transient * 0.25f);
-        projected.size = node.size * (1.1f / std::max(0.75f, depth));
+        projected.intensity = clamp01(0.42f + std::sin(time_t * 1.2f + node.phase) * 0.18f + f.high * 0.28f + f.transient * 0.18f);
+        projected.size = node.size + f.transient * 0.8f;
         projected.color = node.color;
+        projected.label = make_label(normalized);
         return projected;
     }
 
+    void draw_grid(cv::Mat& img, const AudioFeatures& f) const {
+        const float pulse = 0.10f + f.low * 0.16f;
+        for (int i = 1; i < 5; ++i) {
+            const int x = (width * i) / 5;
+            const int y = (height * i) / 5;
+            const cv::Scalar grid(
+                to_u8((0.05f + pulse) * 255.0f),
+                to_u8((0.04f + pulse * 0.7f) * 255.0f),
+                to_u8((0.10f + pulse * 1.2f) * 255.0f)
+            );
+            cv::line(img, cv::Point(x, 0), cv::Point(x, height - 1), grid, 1, cv::LINE_AA);
+            cv::line(img, cv::Point(0, y), cv::Point(width - 1, y), grid, 1, cv::LINE_AA);
+        }
+    }
+
+    void draw_scanfield(cv::Mat& img, const AudioFeatures& f) const {
+        const int scan_x = std::clamp((int)std::lround(width * (0.5f + std::sin(time_t * 0.34f) * 0.32f)), 0, width - 1);
+        const int scan_y = std::clamp((int)std::lround(height * (0.5f + std::cos(time_t * 0.29f) * 0.28f)), 0, height - 1);
+        const float alpha = 0.08f + f.transient * 0.16f;
+
+        for (int y = 0; y < height; ++y) {
+            const float band = clamp01(1.0f - std::fabs((float)(y - scan_y)) / 18.0f);
+            if (band > 0.01f) add_pixel(img, scan_x, y, cv::Vec3b(to_u8(50.0f * band), to_u8(40.0f * band), to_u8(110.0f * band)), alpha);
+        }
+        for (int x = 0; x < width; ++x) {
+            const float band = clamp01(1.0f - std::fabs((float)(x - scan_x)) / 18.0f);
+            if (band > 0.01f) add_pixel(img, x, scan_y, cv::Vec3b(to_u8(45.0f * band), to_u8(36.0f * band), to_u8(105.0f * band)), alpha);
+        }
+    }
+
     void apply_pixel_distortion(cv::Mat& img, const AudioFeatures& f) const {
-        const float amount = std::clamp(f.low * 0.55f + f.transient * 0.95f + f.high * 0.30f, 0.0f, 1.0f);
+        const float amount = std::clamp(f.low * 0.45f + f.transient * 0.90f + f.high * 0.18f, 0.0f, 1.0f);
         if (amount < 0.04f) return;
 
         cv::Mat original = img.clone();
-        const int band_step = std::max(2, 4 - (int)std::floor(f.high * 2.0f));
+        const int band_step = 3;
 
         for (int y = 0; y < img.rows; ++y) {
-            const float wave = std::sin(time_t * 3.5f + y * 0.17f) * (1.0f + f.low * 5.0f);
-            const int dx = (int)std::lround(wave * amount * 2.4f);
+            const float wave = std::sin(time_t * 2.4f + y * 0.13f) * (0.8f + f.low * 3.2f);
+            const int dx = (int)std::lround(wave * amount * 1.8f);
             if ((y / band_step) % 2 == 0) {
                 for (int x = 0; x < img.cols; ++x) {
                     const int sx = std::clamp(x + dx, 0, img.cols - 1);
@@ -545,71 +556,60 @@ public:
             }
         }
 
-        const int center_y = std::clamp((int)std::lround(height * (0.5f + std::sin(time_t * 0.7f) * 0.22f)), 0, height - 1);
-        const int smear_radius = std::max(2, (int)std::lround(2 + f.transient * 10.0f));
+        const int center_y = std::clamp((int)std::lround(height * (0.5f + std::sin(time_t * 0.42f) * 0.20f)), 0, height - 1);
+        const int smear_radius = std::max(2, (int)std::lround(1 + f.transient * 6.0f));
         for (int y = std::max(0, center_y - smear_radius); y <= std::min(height - 1, center_y + smear_radius); ++y) {
-            const int shift = (int)std::lround(std::sin(time_t * 8.0f + y) * (1.0f + f.transient * 10.0f));
+            const int shift = (int)std::lround(std::sin(time_t * 5.6f + y) * (1.0f + f.transient * 6.0f));
             for (int x = 0; x < width; ++x) {
                 const int sx = std::clamp(x + shift, 0, width - 1);
-                add_pixel(img, x, y, original.at<cv::Vec3b>(y, sx), 0.55f);
+                add_pixel(img, x, y, original.at<cv::Vec3b>(y, sx), 0.42f);
             }
         }
     }
 
     void soften_and_trail(cv::Mat& img, const AudioFeatures& f) {
         cv::Mat blurred;
-        cv::GaussianBlur(img, blurred, cv::Size(0, 0), 0.8 + f.high * 1.4f);
-        cv::addWeighted(img, 0.82f, blurred, 0.18f + f.high * 0.18f, 0.0, img);
+        cv::GaussianBlur(img, blurred, cv::Size(0, 0), 0.65 + f.high * 0.8f);
+        cv::addWeighted(img, 0.88f, blurred, 0.12f + f.high * 0.12f, 0.0, img);
 
-        const float trail = std::clamp(0.10f + f.low * 0.20f + (1.0f - f.transient) * 0.12f, 0.08f, 0.34f);
+        const float trail = std::clamp(0.08f + f.low * 0.12f + (1.0f - f.transient) * 0.08f, 0.06f, 0.22f);
         cv::addWeighted(img, 1.0f, prev_output, trail, 0.0, img);
         prev_output = img.clone();
     }
 
     cv::Mat update(const AudioFeatures& f) {
-        time_t += 0.035f + f.rms * 0.018f;
+        time_t += 0.028f + f.rms * 0.014f;
 
         cv::Mat img(height, width, CV_8UC3, cv::Scalar(4, 2, 10));
         for (int y = 0; y < height; ++y) {
             const float vertical = (float) y / std::max(1, height - 1);
-            const float haze = 0.10f + std::sin(time_t * 0.35f + vertical * 5.5f) * 0.04f + f.low * 0.12f;
+            const float haze = 0.08f + std::sin(time_t * 0.18f + vertical * 4.0f) * 0.03f + f.low * 0.08f;
             for (int x = 0; x < width; ++x) {
                 cv::Vec3b& px = img.at<cv::Vec3b>(y, x);
-                px[0] = to_u8(5.0f + haze * 34.0f);
-                px[1] = to_u8(2.0f + haze * 18.0f);
-                px[2] = to_u8(11.0f + haze * 52.0f);
+                px[0] = to_u8(4.0f + haze * 28.0f);
+                px[1] = to_u8(3.0f + haze * 15.0f);
+                px[2] = to_u8(10.0f + haze * 46.0f);
             }
         }
 
-        std::vector<ProjectedStar> projected;
-        projected.reserve(stars.size());
-        const float orbit_phase = time_t * (0.35f + f.low * 0.85f) + f.transient * 0.8f;
+        draw_grid(img, f);
+        draw_scanfield(img, f);
 
-        for (const auto& star : stars) {
-            ProjectedStar p = project_star(star, f, orbit_phase);
-            if (p.pos.x < -8.0f || p.pos.x > width + 8.0f || p.pos.y < -8.0f || p.pos.y > height + 8.0f) continue;
-            projected.push_back(p);
+        std::vector<ProjectedNode> projected;
+        projected.reserve(nodes.size());
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            projected.push_back(project_node(nodes[i], f, (int)i));
         }
 
-        const float link_distance = 11.0f + f.mid * 24.0f + f.low * 10.0f;
-        const float link_energy = std::clamp(f.mid * 0.85f + f.transient * 0.65f + f.high * 0.20f, 0.0f, 1.0f);
+        const float route_alpha = clamp01(0.18f + f.mid * 0.55f + f.transient * 0.25f);
+        for (const auto& route : routes) {
+            draw_connection(img, projected[route.first], projected[route.second], route_alpha);
+        }
+
+        const float flicker = clamp01(0.32f + f.high * 0.48f + f.transient * 0.20f);
         for (size_t i = 0; i < projected.size(); ++i) {
-            for (size_t j = i + 1; j < projected.size(); ++j) {
-                const float dx = projected[i].pos.x - projected[j].pos.x;
-                const float dy = projected[i].pos.y - projected[j].pos.y;
-                const float dist = std::sqrt(dx * dx + dy * dy);
-                if (dist > link_distance) continue;
-
-                const float depth_diff = std::fabs(projected[i].depth - projected[j].depth);
-                if (depth_diff > 0.65f + f.mid * 0.45f) continue;
-
-                const float alpha = clamp01((1.0f - dist / link_distance) * (0.10f + link_energy * 0.95f));
-                if (alpha > 0.03f) draw_connection(img, projected[i], projected[j], alpha);
-            }
-        }
-
-        for (const auto& star : projected) {
-            draw_star(img, star, f.transient);
+            draw_node(img, projected[i], f.transient);
+            draw_label(img, projected[i], (int)i, flicker);
         }
 
         apply_pixel_distortion(img, f);
@@ -617,11 +617,11 @@ public:
 
         if (f.transient > 0.08f) {
             cv::Mat flash(height, width, CV_8UC3, cv::Scalar(
-                to_u8(16.0f + f.high * 90.0f),
-                to_u8(8.0f + f.mid * 40.0f),
-                to_u8(14.0f + f.transient * 70.0f)
+                to_u8(10.0f + f.high * 56.0f),
+                to_u8(8.0f + f.mid * 28.0f),
+                to_u8(16.0f + f.transient * 54.0f)
             ));
-            cv::addWeighted(img, 1.0f, flash, std::clamp(f.transient * 0.12f, 0.0f, 0.20f), 0.0, img);
+            cv::addWeighted(img, 1.0f, flash, std::clamp(f.transient * 0.08f, 0.0f, 0.14f), 0.0, img);
         }
 
         return img;
