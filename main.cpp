@@ -1037,7 +1037,7 @@ int main(int argc, char *argv[]) {
     const int PARALLEL = env_to_int("MATRIX_PARALLEL", 1);
     const int LOGICAL_WIDTH = PANEL_COLS * 2;
     const int LOGICAL_HEIGHT = PANEL_ROWS * 2;
-    const std::string VIDEO_PATH = "video.mov";
+    const std::string VIDEO_PATH = "video.mp4";
 
 #if defined(__linux__) && defined(SUPPRESS_ALSA_WARNINGS)
     // PortAudio/ALSA prova diversi PCM durante la discovery; disattiviamo il rumore su stderr.
@@ -1195,7 +1195,7 @@ int main(int argc, char *argv[]) {
         cv::Mat out = visual.update(features, kick_hold);
 
         const float orientation_energy = std::clamp(features.transient * 1.75f + features.high * 1.05f + features.rms * 0.60f, 0.0f, 1.0f);
-        if (orientation_energy > 0.70f && since_kick > 0.50f) {
+        if (orientation_energy > 0.50f && since_kick > 0.30f) {
             active_orientation_variant = 1 + (rand() % 2);
             orientation_variant_until = now + std::chrono::milliseconds(180);
         }
