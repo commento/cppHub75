@@ -20,6 +20,7 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #if defined(__linux__) || defined(__APPLE__)
 #include <termios.h>
 #include <unistd.h>
@@ -103,6 +104,9 @@ public:
     snd_pcm_t* alsa_capture = nullptr;
     std::thread alsa_thread;
     bool alsa_running = false;
+    FILE* arecord_pipe = nullptr;
+    std::thread arecord_thread;
+    bool arecord_running = false;
 #endif
 
     AudioFeatures current_features;
@@ -247,13 +251,65 @@ public:
     }
 
 #if defined(__linux__)
-    const char* preferred_alsa_device() const {
-        const char* env = std::getenv("ALSA_HW_DEVICE");
-        if (env && *env) return env;
-        return "hw:2,0";
+    bool try_open_arecord_device(const char* device_name) {
+        std::string cmd = "arecord -D ";
+        cmd += "'";
+        cmd += device_name;
+        cmd += "' -q -t raw -f FLOAT_LE -c 2 -r 48000";
+
+        arecord_pipe = popen(cmd.c_str(), "r");
+        if (!arecord_pipe) {
+            std::cerr << "[audio-debug] arecord fallback open failed for " << device_name << std::endl;
+            return false;
+        }
+
+        input_channels = PREFERRED_CHANNELS;
+        arecord_running = true;
+        arecord_thread = std::thread([this]() {
+            std::vector<float> buffer(FRAMES_PER_BUFFER * input_channels);
+            while (arecord_running && arecord_pipe) {
+                size_t want = buffer.size();
+                size_t got = fread(buffer.data(), sizeof(float), want, arecord_pipe);
+                if (got == want) {
+                    processInput(buffer.data(), FRAMES_PER_BUFFER);
+                    continue;
+                }
+                if (feof(arecord_pipe)) break;
+                if (ferror(arecord_pipe)) {
+                    clearerr(arecord_pipe);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+        });
+
+        std::cout << "Audio input: " << device_name << " [host=arecord-fallback] (" << input_channels << "ch)" << std::endl;
+        return true;
     }
 
-    bool open_alsa_fallback(const char* device_name) {
+    bool open_arecord_fallback() {
+        const char* env = std::getenv("ALSA_HW_DEVICE");
+        if (env && *env) {
+            return try_open_arecord_device(env);
+        }
+
+        const std::vector<const char*> candidates = {
+            "hw:CARD=TX6,DEV=0",
+            "plughw:CARD=TX6,DEV=0",
+            "hw:TX6,0",
+            "plughw:TX6,0",
+            "hw:2,0",
+            "plughw:2,0",
+        };
+
+        for (const char* candidate : candidates) {
+            if (try_open_arecord_device(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool try_open_alsa_device(const char* device_name) {
         int err = snd_pcm_open(&alsa_capture, device_name, SND_PCM_STREAM_CAPTURE, 0);
         if (err < 0) {
             std::cerr << "[audio-debug] ALSA fallback open failed for " << device_name
@@ -304,6 +360,30 @@ public:
 
         std::cout << "Audio input: " << device_name << " [host=ALSA-fallback] (" << input_channels << "ch)" << std::endl;
         return true;
+    }
+
+    bool open_alsa_fallback() {
+        const char* env = std::getenv("ALSA_HW_DEVICE");
+        if (env && *env) {
+            return try_open_alsa_device(env);
+        }
+
+        const std::vector<const char*> candidates = {
+            "hw:CARD=TX6,DEV=0",
+            "plughw:CARD=TX6,DEV=0",
+            "hw:TX6,0",
+            "plughw:TX6,0",
+            "hw:2,0",
+            "plughw:2,0",
+        };
+
+        for (const char* candidate : candidates) {
+            if (try_open_alsa_device(candidate)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 #endif
 
@@ -424,7 +504,10 @@ public:
 
         if (inputDeviceIndex == paNoDevice) {
 #if defined(__linux__)
-            if (open_alsa_fallback(preferred_alsa_device())) {
+            if (open_alsa_fallback()) {
+                return true;
+            }
+            if (open_arecord_fallback()) {
                 return true;
             }
 #endif
@@ -487,6 +570,14 @@ public:
 
     void stop() {
 #if defined(__linux__)
+        if (arecord_running) {
+            arecord_running = false;
+        }
+        if (arecord_pipe) {
+            pclose(arecord_pipe);
+            arecord_pipe = nullptr;
+        }
+        if (arecord_thread.joinable()) arecord_thread.join();
         if (alsa_running) {
             alsa_running = false;
             if (alsa_thread.joinable()) alsa_thread.join();
