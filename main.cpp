@@ -265,7 +265,7 @@ public:
 
         input_channels = PREFERRED_CHANNELS;
         arecord_running = true;
-        arecord_thread = std::thread([this]() {
+        arecord_thread = std::thread([this, device_name]() {
             std::vector<int16_t> buffer_i16(FRAMES_PER_BUFFER * input_channels);
             std::vector<float> buffer_f32(FRAMES_PER_BUFFER * input_channels);
             while (arecord_running && arecord_pipe) {
