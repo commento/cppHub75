@@ -255,7 +255,7 @@ public:
         std::string cmd = "arecord -D ";
         cmd += "'";
         cmd += device_name;
-        cmd += "' -q -t raw -f FLOAT_LE -c 2 -r 48000";
+        cmd += "' -q -t raw -f S16_LE -c 2 -r 48000";
 
         arecord_pipe = popen(cmd.c_str(), "r");
         if (!arecord_pipe) {
@@ -266,15 +266,22 @@ public:
         input_channels = PREFERRED_CHANNELS;
         arecord_running = true;
         arecord_thread = std::thread([this]() {
-            std::vector<float> buffer(FRAMES_PER_BUFFER * input_channels);
+            std::vector<int16_t> buffer_i16(FRAMES_PER_BUFFER * input_channels);
+            std::vector<float> buffer_f32(FRAMES_PER_BUFFER * input_channels);
             while (arecord_running && arecord_pipe) {
-                size_t want = buffer.size();
-                size_t got = fread(buffer.data(), sizeof(float), want, arecord_pipe);
+                size_t want = buffer_i16.size();
+                size_t got = fread(buffer_i16.data(), sizeof(int16_t), want, arecord_pipe);
                 if (got == want) {
-                    processInput(buffer.data(), FRAMES_PER_BUFFER);
+                    for (size_t i = 0; i < got; ++i) {
+                        buffer_f32[i] = (float)buffer_i16[i] / 32768.0f;
+                    }
+                    processInput(buffer_f32.data(), FRAMES_PER_BUFFER);
                     continue;
                 }
-                if (feof(arecord_pipe)) break;
+                if (feof(arecord_pipe)) {
+                    std::cerr << "[audio-debug] arecord fallback ended for " << device_name << std::endl;
+                    break;
+                }
                 if (ferror(arecord_pipe)) {
                     clearerr(arecord_pipe);
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -293,12 +300,12 @@ public:
         }
 
         const std::vector<const char*> candidates = {
-            "hw:CARD=TX6,DEV=0",
-            "plughw:CARD=TX6,DEV=0",
-            "hw:TX6,0",
             "plughw:TX6,0",
-            "hw:2,0",
             "plughw:2,0",
+            "hw:TX6,0",
+            "hw:2,0",
+            "plughw:CARD=TX6,DEV=0",
+            "hw:CARD=TX6,DEV=0",
         };
 
         for (const char* candidate : candidates) {
