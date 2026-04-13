@@ -6,7 +6,7 @@
 #include <portaudio.h>
 #include <fftw3.h>
 #include <mutex>
-#if defined(__linux__) && defined(SUPPRESS_ALSA_WARNINGS)
+#if defined(__linux__)
 #include <alsa/asoundlib.h>
 #endif
 
@@ -98,6 +98,12 @@ public:
     PaStream* stream = nullptr;
     std::mutex mtx;
     int input_channels = 0;
+    bool use_alsa_fallback = false;
+#if defined(__linux__)
+    snd_pcm_t* alsa_capture = nullptr;
+    std::thread alsa_thread;
+    bool alsa_running = false;
+#endif
 
     AudioFeatures current_features;
 
@@ -240,6 +246,67 @@ public:
         return value;
     }
 
+#if defined(__linux__)
+    const char* preferred_alsa_device() const {
+        const char* env = std::getenv("ALSA_HW_DEVICE");
+        if (env && *env) return env;
+        return "hw:2,0";
+    }
+
+    bool open_alsa_fallback(const char* device_name) {
+        int err = snd_pcm_open(&alsa_capture, device_name, SND_PCM_STREAM_CAPTURE, 0);
+        if (err < 0) {
+            std::cerr << "[audio-debug] ALSA fallback open failed for " << device_name
+                      << ": " << snd_strerror(err) << std::endl;
+            alsa_capture = nullptr;
+            return false;
+        }
+
+        err = snd_pcm_set_params(
+            alsa_capture,
+            SND_PCM_FORMAT_FLOAT_LE,
+            SND_PCM_ACCESS_RW_INTERLEAVED,
+            PREFERRED_CHANNELS,
+            SAMPLE_RATE,
+            1,
+            20000
+        );
+        if (err < 0) {
+            std::cerr << "[audio-debug] ALSA fallback params failed: " << snd_strerror(err) << std::endl;
+            snd_pcm_close(alsa_capture);
+            alsa_capture = nullptr;
+            return false;
+        }
+
+        input_channels = PREFERRED_CHANNELS;
+        use_alsa_fallback = true;
+        alsa_running = true;
+        alsa_thread = std::thread([this]() {
+            std::vector<float> buffer(FRAMES_PER_BUFFER * input_channels);
+            while (alsa_running) {
+                int frames = snd_pcm_readi(alsa_capture, buffer.data(), FRAMES_PER_BUFFER);
+                if (frames == -EPIPE) {
+                    snd_pcm_prepare(alsa_capture);
+                    continue;
+                }
+                if (frames < 0) {
+                    frames = snd_pcm_recover(alsa_capture, frames, 1);
+                    if (frames < 0) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        continue;
+                    }
+                }
+                if (frames > 0) {
+                    processInput(buffer.data(), (unsigned long)frames);
+                }
+            }
+        });
+
+        std::cout << "Audio input: " << device_name << " [host=ALSA-fallback] (" << input_channels << "ch)" << std::endl;
+        return true;
+    }
+#endif
+
     bool audio_debug_enabled() const {
         const char* value = std::getenv("AUDIO_DEBUG");
         if (!value || !*value) return true;
@@ -356,6 +423,11 @@ public:
         inputDeviceIndex = chooseInputDevice(inputDeviceIndex);
 
         if (inputDeviceIndex == paNoDevice) {
+#if defined(__linux__)
+            if (open_alsa_fallback(preferred_alsa_device())) {
+                return true;
+            }
+#endif
             std::cerr << "Nessun input audio trovato\n";
             return false;
         }
@@ -414,12 +486,24 @@ public:
     }
 
     void stop() {
+#if defined(__linux__)
+        if (alsa_running) {
+            alsa_running = false;
+            if (alsa_thread.joinable()) alsa_thread.join();
+        }
+        if (alsa_capture) {
+            snd_pcm_drop(alsa_capture);
+            snd_pcm_close(alsa_capture);
+            alsa_capture = nullptr;
+        }
+#endif
         if (stream) {
             Pa_StopStream(stream);
             Pa_CloseStream(stream);
             stream = nullptr;
         }
         input_channels = 0;
+        use_alsa_fallback = false;
         Pa_Terminate();
     }
 };
