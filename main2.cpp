@@ -361,8 +361,8 @@ public:
     static constexpr float kTau = 6.28318530718f;
 
     struct MapNode {
-        cv::Point2f anchor;
-        cv::Point2f drift;
+        cv::Point3f anchor;
+        cv::Point3f drift;
         float phase = 0.0f;
         float size = 1.0f;
         std::array<float, 3> color {1.0f, 1.0f, 1.0f};
@@ -370,10 +370,17 @@ public:
 
     struct ProjectedNode {
         cv::Point2f pos;
+        float depth = 0.0f;
         float intensity = 0.0f;
         float size = 1.0f;
         std::array<float, 3> color {1.0f, 1.0f, 1.0f};
         std::string label;
+    };
+
+    struct CameraState {
+        cv::Point3f position;
+        float yaw = 0.0f;
+        float pitch = 0.0f;
     };
 
     int width, height;
@@ -390,15 +397,15 @@ public:
 
     void seed_nodes() {
         nodes = {
-            {cv::Point2f(0.16f, 0.18f), cv::Point2f(0.018f, 0.016f), 0.10f, 2.4f, {0.78f, 0.82f, 1.00f}},
-            {cv::Point2f(0.38f, 0.12f), cv::Point2f(0.014f, 0.020f), 0.60f, 2.2f, {0.68f, 0.90f, 1.00f}},
-            {cv::Point2f(0.70f, 0.20f), cv::Point2f(0.016f, 0.014f), 1.20f, 2.6f, {1.00f, 0.78f, 0.88f}},
-            {cv::Point2f(0.84f, 0.37f), cv::Point2f(0.015f, 0.018f), 1.80f, 2.3f, {0.92f, 0.82f, 1.00f}},
-            {cv::Point2f(0.58f, 0.47f), cv::Point2f(0.017f, 0.015f), 2.20f, 2.5f, {0.76f, 0.96f, 0.92f}},
-            {cv::Point2f(0.28f, 0.42f), cv::Point2f(0.020f, 0.013f), 2.80f, 2.1f, {0.88f, 0.90f, 1.00f}},
-            {cv::Point2f(0.18f, 0.66f), cv::Point2f(0.015f, 0.021f), 3.30f, 2.7f, {1.00f, 0.84f, 0.78f}},
-            {cv::Point2f(0.47f, 0.76f), cv::Point2f(0.016f, 0.017f), 3.80f, 2.4f, {0.78f, 0.88f, 1.00f}},
-            {cv::Point2f(0.77f, 0.72f), cv::Point2f(0.019f, 0.014f), 4.40f, 2.5f, {0.86f, 1.00f, 0.90f}}
+            {cv::Point3f(-1.55f, -1.10f, 1.10f), cv::Point3f(0.20f, 0.14f, 0.24f), 0.10f, 2.5f, {0.78f, 0.82f, 1.00f}},
+            {cv::Point3f(-0.60f, -1.35f, 2.15f), cv::Point3f(0.16f, 0.15f, 0.22f), 0.60f, 2.1f, {0.68f, 0.90f, 1.00f}},
+            {cv::Point3f(1.05f, -0.85f, 3.10f), cv::Point3f(0.15f, 0.16f, 0.28f), 1.20f, 2.5f, {1.00f, 0.78f, 0.88f}},
+            {cv::Point3f(1.70f, 0.05f, 4.25f), cv::Point3f(0.16f, 0.12f, 0.25f), 1.80f, 2.2f, {0.92f, 0.82f, 1.00f}},
+            {cv::Point3f(0.35f, 0.25f, 3.65f), cv::Point3f(0.18f, 0.13f, 0.20f), 2.20f, 2.4f, {0.76f, 0.96f, 0.92f}},
+            {cv::Point3f(-0.85f, -0.05f, 2.75f), cv::Point3f(0.20f, 0.11f, 0.24f), 2.80f, 2.0f, {0.88f, 0.90f, 1.00f}},
+            {cv::Point3f(-1.45f, 1.10f, 4.70f), cv::Point3f(0.17f, 0.16f, 0.30f), 3.30f, 2.6f, {1.00f, 0.84f, 0.78f}},
+            {cv::Point3f(0.05f, 1.35f, 5.65f), cv::Point3f(0.18f, 0.17f, 0.26f), 3.80f, 2.3f, {0.78f, 0.88f, 1.00f}},
+            {cv::Point3f(1.35f, 1.05f, 6.35f), cv::Point3f(0.19f, 0.14f, 0.28f), 4.40f, 2.4f, {0.86f, 1.00f, 0.90f}}
         };
 
         routes = {
@@ -466,10 +473,11 @@ public:
         return cv::Point2f(p.x + wave_x, p.y + wave_y);
     }
 
-    std::string make_label(const cv::Point2f& normalized) const {
-        const int gx = std::clamp((int)std::lround(normalized.x * 99.0f), 0, 99);
-        const int gy = std::clamp((int)std::lround(normalized.y * 99.0f), 0, 99);
-        return std::to_string(gx) + "," + std::to_string(gy);
+    std::string make_label(const cv::Point3f& world) const {
+        const int gx = (int)std::lround(world.x * 10.0f);
+        const int gy = (int)std::lround(world.y * 10.0f);
+        const int gz = (int)std::lround(world.z * 10.0f);
+        return std::to_string(gx) + "," + std::to_string(gy) + "," + std::to_string(gz);
     }
 
     void draw_label(cv::Mat& img, const ProjectedNode& node, int index, float flicker) const {
@@ -485,26 +493,60 @@ public:
         cv::putText(img, node.label, cv::Point(tx, ty), cv::FONT_HERSHEY_PLAIN, 0.55, ink, 1, cv::LINE_AA);
     }
 
-    ProjectedNode project_node(const MapNode& node, const AudioFeatures& f, int index) const {
-        const float drift_x = std::sin(time_t * 0.45f + node.phase) * node.drift.x * (1.0f + f.low * 1.7f);
-        const float drift_y = std::cos(time_t * 0.38f + node.phase * 1.2f) * node.drift.y * (1.0f + f.mid * 1.4f);
-        const float roam_x = std::sin(time_t * 0.22f + index * 0.9f) * 0.010f;
-        const float roam_y = std::cos(time_t * 0.25f + index * 1.1f) * 0.012f;
-
-        cv::Point2f normalized(
-            clamp01(node.anchor.x + drift_x + roam_x),
-            clamp01(node.anchor.y + drift_y + roam_y)
+    CameraState build_camera(const AudioFeatures& f) const {
+        CameraState cam;
+        cam.position = cv::Point3f(
+            std::sin(time_t * 0.23f) * (0.75f + f.low * 0.90f),
+            std::cos(time_t * 0.19f) * (0.45f + f.mid * 0.55f),
+            -1.2f + std::sin(time_t * 0.16f) * 0.55f - f.low * 0.35f
         );
+        cam.yaw = std::sin(time_t * 0.21f) * (0.32f + f.low * 0.28f) + std::sin(time_t * 0.63f) * 0.09f;
+        cam.pitch = std::cos(time_t * 0.17f) * (0.15f + f.mid * 0.16f) + std::sin(time_t * 0.47f) * 0.06f;
+        return cam;
+    }
 
-        cv::Point2f screen(normalized.x * (width - 1), normalized.y * (height - 1));
-        screen = distort_point(screen, f);
+    ProjectedNode project_node(const MapNode& node, const CameraState& cam, const AudioFeatures& f, int index) const {
+        cv::Point3f world = node.anchor;
+        world.x += std::sin(time_t * 0.45f + node.phase) * node.drift.x * (1.0f + f.low * 1.7f);
+        world.y += std::cos(time_t * 0.38f + node.phase * 1.2f) * node.drift.y * (1.0f + f.mid * 1.4f);
+        world.z += std::sin(time_t * 0.29f + node.phase * 0.9f) * node.drift.z * (1.0f + f.low * 1.1f);
+        world.x += std::sin(time_t * 0.22f + index * 0.9f) * 0.08f;
+        world.y += std::cos(time_t * 0.25f + index * 1.1f) * 0.10f;
+
+        cv::Point3f rel(world.x - cam.position.x, world.y - cam.position.y, world.z - cam.position.z);
+
+        const float cy = std::cos(cam.yaw);
+        const float sy = std::sin(cam.yaw);
+        const float cp = std::cos(cam.pitch);
+        const float sp = std::sin(cam.pitch);
+
+        const float x1 = rel.x * cy - rel.z * sy;
+        const float z1 = rel.x * sy + rel.z * cy;
+        const float y2 = rel.y * cp - z1 * sp;
+        const float z2 = rel.y * sp + z1 * cp;
 
         ProjectedNode projected;
+        projected.depth = z2;
+        if (z2 <= 0.30f) {
+            projected.pos = cv::Point2f(-1000.0f, -1000.0f);
+            projected.intensity = 0.0f;
+            projected.size = 0.0f;
+            projected.label = "";
+            return projected;
+        }
+
+        const float perspective = 1.35f / z2;
+        cv::Point2f screen(
+            width * 0.5f + x1 * perspective * width * 0.34f,
+            height * 0.5f + y2 * perspective * height * 0.34f
+        );
+        screen = distort_point(screen, f);
+
         projected.pos = screen;
-        projected.intensity = clamp01(0.42f + std::sin(time_t * 1.2f + node.phase) * 0.18f + f.high * 0.28f + f.transient * 0.18f);
-        projected.size = node.size + f.transient * 0.8f;
+        projected.intensity = clamp01(0.34f + std::sin(time_t * 1.2f + node.phase) * 0.16f + f.high * 0.24f + f.transient * 0.16f + 0.35f / z2);
+        projected.size = std::clamp(node.size * (1.25f / z2) + f.transient * 0.5f, 1.4f, 4.4f);
         projected.color = node.color;
-        projected.label = make_label(normalized);
+        projected.label = make_label(world);
         return projected;
     }
 
@@ -523,9 +565,9 @@ public:
         }
     }
 
-    void draw_scanfield(cv::Mat& img, const AudioFeatures& f) const {
-        const int scan_x = std::clamp((int)std::lround(width * (0.5f + std::sin(time_t * 0.34f) * 0.32f)), 0, width - 1);
-        const int scan_y = std::clamp((int)std::lround(height * (0.5f + std::cos(time_t * 0.29f) * 0.28f)), 0, height - 1);
+    void draw_scanfield(cv::Mat& img, const CameraState& cam, const AudioFeatures& f) const {
+        const int scan_x = std::clamp((int)std::lround(width * 0.5f + cam.yaw * width * 0.35f), 0, width - 1);
+        const int scan_y = std::clamp((int)std::lround(height * 0.5f - cam.pitch * height * 0.45f), 0, height - 1);
         const float alpha = 0.08f + f.transient * 0.16f;
 
         for (int y = 0; y < height; ++y) {
@@ -593,21 +635,28 @@ public:
         }
 
         draw_grid(img, f);
-        draw_scanfield(img, f);
+        const CameraState cam = build_camera(f);
+        draw_scanfield(img, cam, f);
 
         std::vector<ProjectedNode> projected;
         projected.reserve(nodes.size());
         for (size_t i = 0; i < nodes.size(); ++i) {
-            projected.push_back(project_node(nodes[i], f, (int)i));
+            projected.push_back(project_node(nodes[i], cam, f, (int)i));
         }
 
         const float route_alpha = clamp01(0.18f + f.mid * 0.55f + f.transient * 0.25f);
         for (const auto& route : routes) {
-            draw_connection(img, projected[route.first], projected[route.second], route_alpha);
+            const auto& a = projected[route.first];
+            const auto& b = projected[route.second];
+            if (a.depth <= 0.30f || b.depth <= 0.30f) continue;
+            if (a.pos.x < -100.0f || b.pos.x < -100.0f) continue;
+            const float depth_gate = clamp01(1.35f - std::fabs(a.depth - b.depth) * 0.22f);
+            draw_connection(img, a, b, route_alpha * depth_gate);
         }
 
         const float flicker = clamp01(0.32f + f.high * 0.48f + f.transient * 0.20f);
         for (size_t i = 0; i < projected.size(); ++i) {
+            if (projected[i].depth <= 0.30f || projected[i].pos.x < -100.0f) continue;
             draw_node(img, projected[i], f.transient);
             draw_label(img, projected[i], (int)i, flicker);
         }
