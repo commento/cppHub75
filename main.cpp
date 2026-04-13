@@ -826,20 +826,27 @@ public:
 // --------------------------------------------
 // Utils
 // --------------------------------------------
-bool is_black_frame(const cv::Mat& frame, int threshold = 18, float dark_ratio = 0.92f) {
+bool is_black_frame(const cv::Mat& frame, int threshold = 28, float dark_ratio = 0.985f) {
     cv::Mat luma;
     cv::cvtColor(frame, luma, cv::COLOR_RGB2GRAY);
 
     int dark = 0;
+    int bright = 0;
     int total = luma.rows * luma.cols;
 
     for (int y = 0; y < luma.rows; y++) {
         for (int x = 0; x < luma.cols; x++) {
-            if (luma.at<uchar>(y, x) < threshold) dark++;
+            uchar value = luma.at<uchar>(y, x);
+            if (value < threshold) dark++;
+            if (value > threshold + 22) bright++;
         }
     }
 
-    return ((float)dark / total) > dark_ratio;
+    const float dark_portion = (float)dark / total;
+    const float bright_portion = (float)bright / total;
+
+    // Considera "nero" solo un frame quasi totalmente buio, non uno con un riquadro nero.
+    return dark_portion > dark_ratio && bright_portion < 0.008f;
 }
 
 int env_to_int(const char* name, int fallback) {
