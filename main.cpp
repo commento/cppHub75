@@ -240,6 +240,48 @@ public:
         return value;
     }
 
+    bool audio_debug_enabled() const {
+        const char* value = std::getenv("AUDIO_DEBUG");
+        if (!value || !*value) return true;
+        std::string normalized = to_lower(value);
+        return !(normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off");
+    }
+
+    void dump_audio_devices() const {
+        int device_count = Pa_GetDeviceCount();
+        std::cerr << "[audio-debug] PortAudio device count: " << device_count << std::endl;
+        if (device_count < 0) {
+            std::cerr << "[audio-debug] Pa_GetDeviceCount error: " << Pa_GetErrorText(device_count) << std::endl;
+            return;
+        }
+
+        int default_input = Pa_GetDefaultInputDevice();
+        std::cerr << "[audio-debug] Default input device index: " << default_input << std::endl;
+
+        const char* xdg_runtime = std::getenv("XDG_RUNTIME_DIR");
+        const char* pulse_server = std::getenv("PULSE_SERVER");
+        const char* dbus_addr = std::getenv("DBUS_SESSION_BUS_ADDRESS");
+        std::cerr << "[audio-debug] XDG_RUNTIME_DIR=" << (xdg_runtime ? xdg_runtime : "<unset>") << std::endl;
+        std::cerr << "[audio-debug] PULSE_SERVER=" << (pulse_server ? pulse_server : "<unset>") << std::endl;
+        std::cerr << "[audio-debug] DBUS_SESSION_BUS_ADDRESS=" << (dbus_addr ? dbus_addr : "<unset>") << std::endl;
+
+        for (int i = 0; i < device_count; ++i) {
+            const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
+            if (!info) continue;
+
+            const PaHostApiInfo* host = Pa_GetHostApiInfo(info->hostApi);
+            std::cerr
+                << "[audio-debug] device " << i
+                << " name=\"" << info->name << "\""
+                << " host=\"" << (host ? host->name : "unknown") << "\""
+                << " in=" << info->maxInputChannels
+                << " out=" << info->maxOutputChannels
+                << " default-rate=" << info->defaultSampleRate;
+            if (i == default_input) std::cerr << " [default-input]";
+            std::cerr << std::endl;
+        }
+    }
+
     int chooseInputDevice(int requestedDeviceIndex) {
         if (requestedDeviceIndex >= 0) return requestedDeviceIndex;
 
@@ -259,11 +301,28 @@ public:
             }
         }
 
+        auto contains_any = [&](const std::string& haystack, std::initializer_list<const char*> needles) {
+            for (const char* needle : needles) {
+                if (haystack.find(to_lower(needle)) != std::string::npos) return true;
+            }
+            return false;
+        };
+
         int default_device = Pa_GetDefaultInputDevice();
         if (default_device != paNoDevice) {
             const PaDeviceInfo* info = Pa_GetDeviceInfo(default_device);
             if (info && info->maxInputChannels > 0) {
                 return default_device;
+            }
+        }
+
+        for (int i = 0; i < device_count; ++i) {
+            const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
+            if (!info || info->maxInputChannels <= 0) continue;
+
+            std::string name = to_lower(info->name);
+            if (contains_any(name, {"usb", "hw:", "alsa", "audio"})) {
+                return i;
             }
         }
 
@@ -290,6 +349,10 @@ public:
             return false;
         }
 
+        if (audio_debug_enabled()) {
+            dump_audio_devices();
+        }
+
         inputDeviceIndex = chooseInputDevice(inputDeviceIndex);
 
         if (inputDeviceIndex == paNoDevice) {
@@ -303,8 +366,11 @@ public:
             return false;
         }
 
+        const PaHostApiInfo* host = Pa_GetHostApiInfo(info->hostApi);
+
         input_channels = std::min(PREFERRED_CHANNELS, info->maxInputChannels);
         std::cout << "Audio input: " << info->name
+                  << " [host=" << (host ? host->name : "unknown") << "]"
                   << " (" << input_channels << "ch)" << std::endl;
 
         PaStreamParameters inputParams;
@@ -326,13 +392,16 @@ public:
         );
 
         if (err != paNoError) {
-            std::cerr << "Errore apertura stream audio\n";
+            std::cerr << "Errore apertura stream audio: " << Pa_GetErrorText(err) << "\n";
+            if (audio_debug_enabled()) {
+                dump_audio_devices();
+            }
             return false;
         }
 
         err = Pa_StartStream(stream);
         if (err != paNoError) {
-            std::cerr << "Errore start stream audio\n";
+            std::cerr << "Errore start stream audio: " << Pa_GetErrorText(err) << "\n";
             return false;
         }
 
